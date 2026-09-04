@@ -1,0 +1,12 @@
+# Rust build output
+/target/
+
+# trybuild temporary snapshots
+/wip/
+
+# rustfmt backups and profiling output
+**/*.rs.bk
+*.profraw
+
+# Local design and research documents
+/documents/intermediate-output/
