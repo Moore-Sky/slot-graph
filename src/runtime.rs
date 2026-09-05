@@ -542,6 +542,77 @@ impl<M: Mode> Default for RunInputs<M> {
         Self::new()
     }
 }
+
+/// Reusable, exclusively-owned storage for one graph run.
+///
+/// This deliberately excludes cancellation and dispatch coordination. Both can
+/// be retained by task contexts or jobs after their originating run is dropped,
+/// so they must always have a fresh allocation for the next run generation.
+struct RunScratch<M: Mode> {
+    statuses: Vec<NodeStatus>,
+    remaining: Vec<usize>,
+    outputs: Vec<Vec<Option<StoredValue>>>,
+    external: Vec<Vec<Vec<StoredValue>>>,
+    futures: Vec<Option<TaskFuture<M>>>,
+    ready: VecDeque<usize>,
+    failures: Vec<Option<NodeError<M>>>,
+    blocked_by: Vec<Option<NodeId>>,
+}
+
+impl<M: Mode> RunScratch<M> {
+    fn new(plan: &CompiledPlan<M>) -> Self {
+        let mut scratch = Self {
+            statuses: Vec::with_capacity(plan.nodes.len()),
+            remaining: Vec::with_capacity(plan.nodes.len()),
+            outputs: Vec::with_capacity(plan.nodes.len()),
+            external: Vec::with_capacity(plan.nodes.len()),
+            futures: Vec::with_capacity(plan.nodes.len()),
+            ready: VecDeque::new(),
+            failures: Vec::with_capacity(plan.nodes.len()),
+            blocked_by: Vec::with_capacity(plan.nodes.len()),
+        };
+        scratch.reset(plan);
+        scratch
+    }
+
+    /// Drops values owned by the completed or abandoned generation while
+    /// retaining the containers and their capacity for the runner's next run.
+    fn reset(&mut self, plan: &CompiledPlan<M>) {
+        let node_count = plan.nodes.len();
+
+        self.statuses.clear();
+        self.statuses.resize(node_count, NodeStatus::Pending);
+
+        self.remaining.clear();
+        self.remaining
+            .extend(plan.nodes.iter().map(|node| node.predecessors.len()));
+
+        self.outputs.resize_with(node_count, Vec::new);
+        self.external.resize_with(node_count, Vec::new);
+        for (index, node) in plan.nodes.iter().enumerate() {
+            let outputs = &mut self.outputs[index];
+            outputs.clear();
+            outputs.resize_with(node.schema.schema().outputs.len(), || None);
+
+            let external = &mut self.external[index];
+            external.resize_with(node.inputs.len(), Vec::new);
+            for values in external.iter_mut() {
+                values.clear();
+            }
+        }
+
+        self.futures.clear();
+        self.futures.resize_with(node_count, || None);
+        self.ready.clear();
+
+        self.failures.clear();
+        self.failures.resize_with(node_count, || None);
+
+        self.blocked_by.clear();
+        self.blocked_by.resize(node_count, None);
+    }
+}
+
 /// An owned future that drives one graph execution.
 ///
 /// Default runs poll Ready nodes inline. Runs created with an external
@@ -571,51 +642,34 @@ impl<M: Mode> GraphRun<M> {
         plan: Arc<CompiledPlan<M>>,
         inputs: RunInputs<M>,
     ) -> Result<Self, StartError> {
-        let external = validate_run_inputs(&plan, inputs)?;
-        Ok(Self::new(plan, external, None, None))
+        let mut scratch = RunScratch::new(&plan);
+        validate_run_inputs_into(&plan, inputs, &mut scratch.external)?;
+        Ok(Self::new(plan, scratch, None, None))
     }
 
     pub(crate) fn execute_inline(plan: Arc<CompiledPlan<M>>, inputs: RunInputs<M>) -> Self {
-        match validate_run_inputs(&plan, inputs) {
-            Ok(external) => Self::new(plan, external, None, None),
-            Err(error) => {
-                let empty = empty_external(&plan);
-                Self::new(plan, empty, Some(error), None)
-            }
-        }
+        let mut scratch = RunScratch::new(&plan);
+        let start_error = validate_run_inputs_into(&plan, inputs, &mut scratch.external).err();
+        Self::new(plan, scratch, start_error, None)
     }
 
     fn new(
         plan: Arc<CompiledPlan<M>>,
-        external: Vec<Vec<Vec<StoredValue>>>,
+        scratch: RunScratch<M>,
         start_error: Option<StartError>,
         dispatcher: Option<Dispatcher<M>>,
     ) -> Self {
-        let node_count = plan.nodes.len();
-        let outputs = plan
-            .nodes
-            .iter()
-            .map(|node| {
-                std::iter::repeat_with(|| None)
-                    .take(node.schema.schema().outputs.len())
-                    .collect()
-            })
-            .collect();
         Self {
             run_id: RunId(NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)),
             cancel: Arc::new(CancelState::new()),
-            statuses: vec![NodeStatus::Pending; node_count],
-            remaining: plan
-                .nodes
-                .iter()
-                .map(|node| node.predecessors.len())
-                .collect(),
-            outputs,
-            external,
-            futures: std::iter::repeat_with(|| None).take(node_count).collect(),
-            ready: VecDeque::new(),
-            failures: std::iter::repeat_with(|| None).take(node_count).collect(),
-            blocked_by: vec![None; node_count],
+            statuses: scratch.statuses,
+            remaining: scratch.remaining,
+            outputs: scratch.outputs,
+            external: scratch.external,
+            futures: scratch.futures,
+            ready: scratch.ready,
+            failures: scratch.failures,
+            blocked_by: scratch.blocked_by,
             dispatcher,
             job_queue: Arc::new(JobQueue::new()),
             initialized: false,
@@ -631,8 +685,9 @@ impl<M: Mode> GraphRun<M> {
         inputs: RunInputs<M>,
         dispatcher: Dispatcher<M>,
     ) -> Result<Self, StartError> {
-        let external = validate_run_inputs(&plan, inputs)?;
-        Ok(Self::new(plan, external, None, Some(dispatcher)))
+        let mut scratch = RunScratch::new(&plan);
+        validate_run_inputs_into(&plan, inputs, &mut scratch.external)?;
+        Ok(Self::new(plan, scratch, None, Some(dispatcher)))
     }
 
     pub(crate) fn execute_dispatched(
@@ -640,13 +695,9 @@ impl<M: Mode> GraphRun<M> {
         inputs: RunInputs<M>,
         dispatcher: Dispatcher<M>,
     ) -> Self {
-        match validate_run_inputs(&plan, inputs) {
-            Ok(external) => Self::new(plan, external, None, Some(dispatcher)),
-            Err(error) => {
-                let empty = empty_external(&plan);
-                Self::new(plan, empty, Some(error), Some(dispatcher))
-            }
-        }
+        let mut scratch = RunScratch::new(&plan);
+        let start_error = validate_run_inputs_into(&plan, inputs, &mut scratch.external).err();
+        Self::new(plan, scratch, start_error, Some(dispatcher))
     }
 
     /// Returns a cloneable external cancellation control.
@@ -655,6 +706,38 @@ impl<M: Mode> GraphRun<M> {
             state: Arc::clone(&self.cancel),
             _mode: PhantomData,
         }
+    }
+
+    fn retire(&self) {
+        let first_retirement = {
+            let _start = self.cancel.start_gate.lock().unwrap();
+            if self.job_queue.retired.swap(true, Ordering::AcqRel) {
+                false
+            } else {
+                self.cancel.cancelled.store(true, Ordering::Release);
+                self.cancel.aborted.store(true, Ordering::Release);
+                true
+            }
+        };
+        if first_retirement {
+            self.cancel.wake_all();
+        }
+    }
+
+    fn take_scratch_for_reuse(&mut self) -> RunScratch<M> {
+        self.retire();
+        let mut scratch = RunScratch {
+            statuses: std::mem::take(&mut self.statuses),
+            remaining: std::mem::take(&mut self.remaining),
+            outputs: std::mem::take(&mut self.outputs),
+            external: std::mem::take(&mut self.external),
+            futures: std::mem::take(&mut self.futures),
+            ready: std::mem::take(&mut self.ready),
+            failures: std::mem::take(&mut self.failures),
+            blocked_by: std::mem::take(&mut self.blocked_by),
+        };
+        scratch.reset(&self.plan);
+        scratch
     }
 }
 impl<M: Mode> Future for GraphRun<M> {
@@ -893,13 +976,7 @@ impl<M: Mode> Unpin for GraphRun<M> {}
 
 impl<M: Mode> Drop for GraphRun<M> {
     fn drop(&mut self) {
-        {
-            let _start = self.cancel.start_gate.lock().unwrap();
-            self.job_queue.retired.store(true, Ordering::Release);
-            self.cancel.cancelled.store(true, Ordering::Release);
-            self.cancel.aborted.store(true, Ordering::Release);
-        }
-        self.cancel.wake_all();
+        self.retire();
     }
 }
 
@@ -966,7 +1043,11 @@ impl<M: Mode> GraphRun<M> {
     }
 
     fn commit_node(&mut self, index: usize, values: Vec<StoredValue>) {
-        self.outputs[index] = values.into_iter().map(Some).collect();
+        let slots = &mut self.outputs[index];
+        debug_assert_eq!(slots.len(), values.len());
+        for (slot, value) in slots.iter_mut().zip(values) {
+            *slot = Some(value);
+        }
         self.statuses[index] = NodeStatus::Succeeded;
         let successors = self.plan.nodes[index].successors.clone();
         for successor in successors {
@@ -1119,19 +1200,16 @@ impl<M: Mode> GraphRun<M> {
     }
 }
 
-fn empty_external<M: Mode>(plan: &CompiledPlan<M>) -> Vec<Vec<Vec<StoredValue>>> {
-    plan.nodes
-        .iter()
-        .map(|node| node.inputs.iter().map(|_| Vec::new()).collect())
-        .collect()
-}
-
-fn validate_run_inputs<M: Mode>(
+fn validate_run_inputs_into<M: Mode>(
     plan: &CompiledPlan<M>,
     inputs: RunInputs<M>,
-) -> Result<Vec<Vec<Vec<StoredValue>>>, StartError> {
-    let mut resolved = empty_external(plan);
-    for supplied in inputs.entries {
+    resolved: &mut [Vec<Vec<StoredValue>>],
+) -> Result<(), StartError> {
+    debug_assert_eq!(resolved.len(), plan.nodes.len());
+    // Validate the complete bag before moving any values into reusable
+    // storage. A failed start must not retain caller-provided resources until
+    // the runner's next use.
+    for supplied in &inputs.entries {
         let Some(&node_index) = plan.node_index.get(&supplied.node) else {
             return Err(start_error(
                 StartErrorKind::UnexpectedRunInput,
@@ -1139,7 +1217,7 @@ fn validate_run_inputs<M: Mode>(
             ));
         };
         let node = &plan.nodes[node_index];
-        let Some((input_index, external)) = node
+        let Some((_input_index, external)) = node
             .schema
             .schema()
             .inputs
@@ -1178,21 +1256,42 @@ fn validate_run_inputs<M: Mode>(
                 Some(supplied.node),
             ));
         }
-        resolved[node_index][input_index] = supplied.values;
     }
-    for (node_index, node) in plan.nodes.iter().enumerate() {
-        for (input_index, input) in node.inputs.iter().enumerate() {
+    for node in &plan.nodes {
+        for input in &node.inputs {
             let Some(external) = input.external else {
                 continue;
             };
             if external.presence == crate::schema::Presence::Required
-                && resolved[node_index][input_index].is_empty()
+                && !inputs.entries.iter().any(|supplied| {
+                    supplied.node == node.id
+                        && supplied.binding == external.binding
+                        && !supplied.values.is_empty()
+                })
             {
                 return Err(start_error(StartErrorKind::MissingRunInput, Some(node.id)));
             }
         }
     }
-    Ok(resolved)
+
+    for supplied in inputs.entries {
+        let node_index = plan.node_index[&supplied.node];
+        let node = &plan.nodes[node_index];
+        let input_index = node
+            .schema
+            .schema()
+            .inputs
+            .iter()
+            .enumerate()
+            .find_map(|(input_index, spec)| {
+                let external = node.inputs[input_index].external?;
+                (spec.id == supplied.slot && external.binding == supplied.binding)
+                    .then_some(input_index)
+            })
+            .expect("validated run input remains bound");
+        resolved[node_index][input_index].extend(supplied.values);
+    }
+    Ok(())
 }
 
 fn start_error(kind: StartErrorKind, node: Option<NodeId>) -> StartError {
@@ -1246,6 +1345,7 @@ impl<M: Mode> RunControl<M> {
 pub struct GraphRunner<M: Mode> {
     plan: Arc<CompiledPlan<M>>,
     dispatcher: Option<Dispatcher<M>>,
+    scratch: Option<RunScratch<M>>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> GraphRunner<M> {
@@ -1253,6 +1353,7 @@ impl<M: Mode> GraphRunner<M> {
         Self {
             plan: version.plan,
             dispatcher: None,
+            scratch: None,
             _mode: PhantomData,
         }
     }
@@ -1264,51 +1365,59 @@ impl<M: Mode> GraphRunner<M> {
         Self {
             plan: version.plan,
             dispatcher: Some(dispatcher),
+            scratch: None,
             _mode: PhantomData,
         }
     }
 
+    fn take_scratch(&mut self) -> RunScratch<M> {
+        self.scratch
+            .take()
+            .unwrap_or_else(|| RunScratch::new(&self.plan))
+    }
+
     /// Borrows this runner until the returned run is dropped.
-    pub fn start<'a>(&'a mut self, _inputs: RunInputs<M>) -> Result<RunnerRun<'a, M>, StartError> {
-        let run = match self.dispatcher.clone() {
-            Some(dispatcher) => {
-                GraphRun::start_dispatched(Arc::clone(&self.plan), _inputs, dispatcher)?
-            }
-            None => GraphRun::start_inline(Arc::clone(&self.plan), _inputs)?,
-        };
-        Ok(RunnerRun {
-            run,
-            _runner: PhantomData,
-            _mode: PhantomData,
-        })
+    pub fn start<'a>(&'a mut self, inputs: RunInputs<M>) -> Result<RunnerRun<'a, M>, StartError> {
+        let mut scratch = self.take_scratch();
+        scratch.reset(&self.plan);
+        if let Err(error) = validate_run_inputs_into(&self.plan, inputs, &mut scratch.external) {
+            self.scratch = Some(scratch);
+            return Err(error);
+        }
+        let run = GraphRun::new(
+            Arc::clone(&self.plan),
+            scratch,
+            None,
+            self.dispatcher.clone(),
+        );
+        Ok(RunnerRun { run, runner: self })
     }
     /// Starts a borrowed runner future.
-    pub fn execute<'a>(&'a mut self, _inputs: RunInputs<M>) -> RunnerRun<'a, M> {
-        let run = match self.dispatcher.clone() {
-            Some(dispatcher) => {
-                GraphRun::execute_dispatched(Arc::clone(&self.plan), _inputs, dispatcher)
-            }
-            None => GraphRun::execute_inline(Arc::clone(&self.plan), _inputs),
-        };
-        RunnerRun {
-            run,
-            _runner: PhantomData,
-            _mode: PhantomData,
-        }
+    pub fn execute<'a>(&'a mut self, inputs: RunInputs<M>) -> RunnerRun<'a, M> {
+        let mut scratch = self.take_scratch();
+        scratch.reset(&self.plan);
+        let start_error = validate_run_inputs_into(&self.plan, inputs, &mut scratch.external).err();
+        let run = GraphRun::new(
+            Arc::clone(&self.plan),
+            scratch,
+            start_error,
+            self.dispatcher.clone(),
+        );
+        RunnerRun { run, runner: self }
     }
-    /// Releases reusable per-run capacity when the runner retains any.
+    /// Releases cached per-run capacity.
     ///
-    /// The current storage strategy allocates isolated state for every run, so
-    /// this operation has no retained buffers to release.
+    /// This does not affect the immutable compiled plan or dispatcher. An
+    /// active [`RunnerRun`] exclusively borrows the runner, so its storage has
+    /// already been returned before this method can be called.
     pub fn trim(&mut self) {
-        // The current implementation keeps only immutable compiled storage.
+        self.scratch = None;
     }
 }
 /// Future borrowing a [`GraphRunner`] exclusively.
 pub struct RunnerRun<'a, M: Mode> {
     run: GraphRun<M>,
-    _runner: PhantomData<&'a mut GraphRunner<M>>,
-    _mode: PhantomData<M>,
+    runner: &'a mut GraphRunner<M>,
 }
 impl<'a, M: Mode> RunnerRun<'a, M> {
     /// Returns run control.
@@ -1323,3 +1432,11 @@ impl<'a, M: Mode> Future for RunnerRun<'a, M> {
     }
 }
 impl<'a, M: Mode> Unpin for RunnerRun<'a, M> {}
+
+impl<'a, M: Mode> Drop for RunnerRun<'a, M> {
+    fn drop(&mut self) {
+        let scratch = self.run.take_scratch_for_reuse();
+        debug_assert!(self.runner.scratch.is_none());
+        self.runner.scratch = Some(scratch);
+    }
+}

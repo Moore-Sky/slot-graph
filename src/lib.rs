@@ -1,7 +1,7 @@
 //! Typed dependency graphs for synchronous and asynchronous tasks.
 //!
-//! Version 0.4.2 closes cancellation/abort wake-registration races while
-//! preserving the executor-neutral runtime contracts.
+//! Version 0.4.3 reuses runner-owned execution buffers while preserving
+//! cancellation, generation isolation, and executor-neutral runtime contracts.
 //!
 //! Start with [Graph], declare [Schema] inputs and outputs, compile an
 //! [ExecutionGraphVersion], then drive a [GraphRun] with your host executor.

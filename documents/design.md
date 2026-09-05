@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.2**
+**Version: 0.4.3**
 
-This is the authoritative 0.4.2 design. It defines observable behavior rather
+This is the authoritative 0.4.3 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -163,8 +163,11 @@ Versions can start independent concurrent runs; one GraphRun cannot be polled
 concurrently. Factories are repeatable and cross-run mutable state belongs in
 application handles/cells/locks. `execute` is an ordinary Future: core may call
 short sync work inline, poll pending async work, and wake the host, but does not
-spawn or select any particular async runtime or CPU scheduler. Runner reuse is CPU-only and
-one runner has one live run.
+spawn or select any particular async runtime or CPU scheduler. Runner reuse is
+CPU-only and one runner has one live run. Since 0.4.3, completed or dropped
+runner runs return their run-local vector capacities to the runner; `trim()`
+releases that retained scratch. Cancellation state and dispatched completion
+queues remain fresh per run so stale worker jobs cannot address reused scratch.
 
 ### Optional external node dispatch
 
@@ -220,8 +223,9 @@ A dispatch error, dispatcher panic, or accepted job dropped during host-pool
 shutdown is a node failure; unrelated branches continue under the usual failure
 policy. A dispatched job can complete after cancellation, abort, or `GraphRun`
 drop, so its completion carries the run generation and is discarded when stale.
-A reusable runner must not expose prior-run storage to a later generation; it
-may defer reuse and allocate fresh storage while retired jobs drain. Hosts must
+A reusable runner must not expose prior-run storage to a later generation.
+Retired jobs retain only their old cancellation state, completion queue, and
+owned input snapshot; they cannot address the next run's reused scratch. Hosts must
 keep their dispatcher alive until live runs reach a terminal state. After
 accepting a job, a dispatcher must eventually poll or drop it. Leaking the job
 is a broken host contract and may leave its `GraphRun` pending indefinitely.

@@ -394,6 +394,41 @@ fn runner_reuses_storage_across_completed_runs() {
 }
 
 #[test]
+fn runner_recovers_from_start_validation_failure_and_trim() {
+    let calls = Rc::new(Cell::new(0));
+    let mut graph = Graph::<Local>::new();
+    let count = Rc::clone(&calls);
+    let node = graph
+        .add_sync(
+            "frame",
+            schema! { ("value": u32) -> () },
+            move |_task, inputs| {
+                let _ = inputs.required::<u32>("value")?;
+                count.set(count.get() + 1);
+                Ok::<_, slot_graph::NodeError<Local>>(outputs! {})
+            },
+        )
+        .unwrap();
+    let input = graph.expose_input::<u32>(node.input("value")).unwrap();
+    graph.set_active(node, true).unwrap();
+    let version = graph.compile().unwrap();
+    let mut runner = version.runner();
+
+    assert!(runner.start(RunInputs::new()).is_err());
+
+    let mut first_inputs = RunInputs::new();
+    first_inputs.insert(input, 1_u32).unwrap();
+    futures_lite::future::block_on(runner.execute(first_inputs)).unwrap();
+
+    runner.trim();
+
+    let mut second_inputs = RunInputs::new();
+    second_inputs.insert(input, 2_u32).unwrap();
+    futures_lite::future::block_on(runner.execute(second_inputs)).unwrap();
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
 fn runner_run_exposes_control_and_is_reusable_after_abort() {
     let mut graph = Graph::<Local>::new();
     let node = graph
