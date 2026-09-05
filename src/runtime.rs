@@ -88,6 +88,27 @@ impl CancelState {
             waker.wake();
         }
     }
+
+    /// Registers an executor waker and reports whether cancellation already
+    /// won the race with that registration. Cancellation first sets its atomic
+    /// flag, then drains this same mutex, so the final check while holding the
+    /// mutex closes the check-register-return-Pending window.
+    ///
+    /// Registration is retained even after cooperative cancellation. A later
+    /// abort must still be able to wake a task that ignored the first request.
+    fn register_waiter(&self, waker: &std::task::Waker) -> bool {
+        // Cloning a RawWaker may execute foreign code. Keep that operation out
+        // of the waiter mutex for the same re-entrancy reason as wake_all().
+        let waker = waker.clone();
+        let mut waiters = self.waiters.lock().unwrap();
+        if !waiters
+            .iter()
+            .any(|registered| registered.will_wake(&waker))
+        {
+            waiters.push(waker);
+        }
+        self.cancelled.load(Ordering::Acquire) || self.aborted.load(Ordering::Acquire)
+    }
 }
 
 /// One Ready node invocation that an external dispatcher may schedule.
@@ -113,6 +134,7 @@ pub struct NodeJob<M: Mode> {
     queue: Arc<JobQueue<M>>,
     cancel: Arc<CancelState>,
     completed: bool,
+    cancel_catch_up_scheduled: bool,
     _mode: PhantomData<M>,
     _not_sync: PhantomData<Cell<()>>,
     _pinned: PhantomPinned,
@@ -136,6 +158,7 @@ impl<M: Mode> NodeJob<M> {
             queue,
             cancel,
             completed: false,
+            cancel_catch_up_scheduled: false,
             _mode: PhantomData,
             _not_sync: PhantomData,
             _pinned: PhantomPinned,
@@ -208,9 +231,34 @@ impl<M: Mode> Future for NodeJob<M> {
         let future = this.future.as_mut().expect("node job future exists");
         match catch_unwind(AssertUnwindSafe(|| Pin::new(future).poll(cx))) {
             Ok(Poll::Pending) => {
-                let mut waiters = this.cancel.waiters.lock().unwrap();
-                if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
-                    waiters.push(cx.waker().clone());
+                if this.cancel.register_waiter(cx.waker()) {
+                    if this.queue.retired.load(Ordering::Acquire) {
+                        this.future = None;
+                        this.task = None;
+                        this.inputs = None;
+                        this.completed = true;
+                        return Poll::Ready(());
+                    }
+                    if this.cancel.aborted.load(Ordering::Acquire) {
+                        this.future = None;
+                        this.task = None;
+                        this.inputs = None;
+                        this.completed = true;
+                        this.queue.push(JobEvent::Cancelled(this.index));
+                        return Poll::Ready(());
+                    }
+
+                    // Cooperative cancellation does not drop an unresponsive
+                    // task. If cancellation happened after its child Future
+                    // returned Pending but before a usable waiter was present,
+                    // no earlier wake could have reached this NodeJob. Schedule
+                    // one catch-up poll so a cancellation-aware child can
+                    // observe its token without turning an ignoring child into
+                    // a self-waking busy loop.
+                    if !this.cancel_catch_up_scheduled {
+                        this.cancel_catch_up_scheduled = true;
+                        cx.waker().wake_by_ref();
+                    }
                 }
                 Poll::Pending
             }
@@ -376,11 +424,7 @@ impl<M: Mode> Future for Cancelled<M> {
         if self.state.cancelled.load(Ordering::Acquire) {
             return Poll::Ready(());
         }
-        let mut waiters = self.state.waiters.lock().unwrap();
-        if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
-            waiters.push(cx.waker().clone());
-        }
-        if self.state.cancelled.load(Ordering::Acquire) {
+        if self.state.register_waiter(cx.waker()) {
             Poll::Ready(())
         } else {
             Poll::Pending

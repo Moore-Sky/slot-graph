@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.1**
+**Version: 0.4.2**
 
-This is the authoritative 0.4.1 design. It defines observable behavior rather
+This is the authoritative 0.4.2 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -241,6 +241,9 @@ abort but cannot synchronously preempt a Future currently being polled on anothe
 worker; later completions are stale and perform cleanup only. Neither operation
 rolls back external effects. Retry, fallback, rollback, and durable
 checkpoint/recovery are not core features.
+Waiter registration is race-free: cancellation or abort between a child
+Future returning `Pending` and its `NodeJob` registering the executor Waker
+must still cause a later poll or immediate abort acknowledgement.
 
 ## Automatic connection, errors, and release gate
 

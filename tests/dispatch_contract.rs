@@ -8,9 +8,10 @@ use std::{
     collections::VecDeque,
     future::Future,
     panic::{catch_unwind, AssertUnwindSafe},
+    pin::Pin,
     sync::{
         mpsc::{self, Receiver, Sender},
-        Arc, Mutex,
+        Arc, Barrier, Mutex,
     },
     task::{Context, Poll, Wake, Waker},
     thread,
@@ -20,7 +21,7 @@ use std::{
 use futures_lite::future::block_on;
 use slot_graph::{
     outputs, schema, DispatchError, ExecuteError, Graph, NodeDispatcher, NodeErrorKind, NodeId,
-    NodeJob, NodeStatus, OutputAccessErrorKind, RunInputs, SendMode,
+    NodeJob, NodeStatus, OutputAccessErrorKind, RunControl, RunInputs, SendMode,
 };
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -360,6 +361,255 @@ fn cancellation_wins_before_a_dispatched_result_can_commit() {
     }
 }
 
+/// Forces cancellation precisely after the child Future has returned Pending
+/// and before NodeJob can register the worker's waker with its cancel state.
+/// A NodeJob must arrange one catch-up poll in that race; otherwise the worker
+/// sleeps forever because cancellation drained the waiter list too early.
+#[test]
+fn cancellation_between_child_pending_and_node_job_waiter_registration_is_not_lost() {
+    struct CancelThenPending {
+        control: Arc<Mutex<Option<RunControl<SendMode>>>>,
+        cancelled: bool,
+    }
+
+    impl Future for CancelThenPending {
+        type Output = slot_graph::SendTaskResult;
+
+        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.cancelled {
+                self.cancelled = true;
+                self.control
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("run control is installed before dispatch")
+                    .cancel();
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(outputs! {}))
+            }
+        }
+    }
+
+    let controls = Arc::new(Mutex::new(None));
+    let future_controls = Arc::clone(&controls);
+    let mut graph = Graph::<SendMode>::new();
+    let node = graph
+        .add_async("race", schema! { () -> () }, move |_task, _inputs| {
+            CancelThenPending {
+                control: Arc::clone(&future_controls),
+                cancelled: false,
+            }
+        })
+        .unwrap();
+    graph.set_active(node, true).unwrap();
+
+    let dispatcher = HoldingDispatcher::default();
+    let run = graph
+        .compile()
+        .unwrap()
+        .start_on(RunInputs::new(), dispatcher.clone())
+        .unwrap();
+    *controls.lock().unwrap() = Some(run.control());
+    let mut run = Box::pin(run);
+    let driver_waker = Waker::from(Arc::new(NoopWake));
+    let mut driver_context = Context::from_waker(&driver_waker);
+
+    assert!(matches!(
+        run.as_mut().poll(&mut driver_context),
+        Poll::Pending
+    ));
+    let mut job = Box::pin(dispatcher.pop());
+    let job_wake = Arc::new(CountWake::default());
+    let job_waker = Waker::from(Arc::clone(&job_wake));
+    let mut job_context = Context::from_waker(&job_waker);
+
+    assert!(matches!(job.as_mut().poll(&mut job_context), Poll::Pending));
+    assert_eq!(
+        job_wake.count(),
+        1,
+        "NodeJob must schedule one catch-up poll after the raced cancellation"
+    );
+    assert!(matches!(
+        job.as_mut().poll(&mut job_context),
+        Poll::Ready(())
+    ));
+
+    match block_on(run) {
+        Err(ExecuteError::Cancelled(report)) => {
+            assert_eq!(report.status(node), Some(NodeStatus::Cancelled));
+        }
+        _ => panic!("the raced dispatched node must finish as cancelled"),
+    }
+}
+
+#[test]
+fn cooperative_cancel_catch_up_does_not_spin_and_later_abort_still_wakes() {
+    struct CancelThenStayPending {
+        control: Arc<Mutex<Option<RunControl<SendMode>>>>,
+        cancelled: bool,
+    }
+
+    impl Future for CancelThenStayPending {
+        type Output = slot_graph::SendTaskResult;
+
+        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.cancelled {
+                self.cancelled = true;
+                self.control
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("run control is installed before dispatch")
+                    .cancel();
+            }
+            Poll::Pending
+        }
+    }
+
+    let controls = Arc::new(Mutex::new(None));
+    let future_controls = Arc::clone(&controls);
+    let mut graph = Graph::<SendMode>::new();
+    let node = graph
+        .add_async(
+            "unresponsive_cancel_race",
+            schema! { () -> () },
+            move |_task, _inputs| CancelThenStayPending {
+                control: Arc::clone(&future_controls),
+                cancelled: false,
+            },
+        )
+        .unwrap();
+    graph.set_active(node, true).unwrap();
+
+    let dispatcher = HoldingDispatcher::default();
+    let run = graph
+        .compile()
+        .unwrap()
+        .start_on(RunInputs::new(), dispatcher.clone())
+        .unwrap();
+    let control = run.control();
+    *controls.lock().unwrap() = Some(control.clone());
+    let mut run = Box::pin(run);
+    let driver_waker = Waker::from(Arc::new(NoopWake));
+    let mut driver_context = Context::from_waker(&driver_waker);
+    assert!(matches!(
+        run.as_mut().poll(&mut driver_context),
+        Poll::Pending
+    ));
+
+    let mut job = Box::pin(dispatcher.pop());
+    let job_wake = Arc::new(CountWake::default());
+    let job_waker = Waker::from(Arc::clone(&job_wake));
+    let mut job_context = Context::from_waker(&job_waker);
+    assert!(matches!(job.as_mut().poll(&mut job_context), Poll::Pending));
+    assert_eq!(job_wake.count(), 1);
+
+    assert!(matches!(job.as_mut().poll(&mut job_context), Poll::Pending));
+    assert_eq!(
+        job_wake.count(),
+        1,
+        "an unresponsive cooperatively cancelled job must not self-wake forever"
+    );
+
+    control.abort();
+    assert_eq!(
+        job_wake.count(),
+        2,
+        "abort must retain a waiter after cooperative cancellation"
+    );
+    assert!(matches!(
+        job.as_mut().poll(&mut job_context),
+        Poll::Ready(())
+    ));
+    assert!(matches!(block_on(run), Err(ExecuteError::Cancelled(_))));
+}
+
+/// Uses a two-party barrier to place abort after the child Future enters its
+/// first poll but before NodeJob can register the worker waker.
+#[test]
+fn abort_between_child_pending_and_node_job_waiter_registration_finishes_the_job() {
+    struct BarrierThenPending {
+        gate: Arc<Barrier>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Future for BarrierThenPending {
+        type Output = slot_graph::SendTaskResult;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.gate.wait();
+            self.gate.wait();
+            Poll::Pending
+        }
+    }
+
+    impl Drop for BarrierThenPending {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    let gate = Arc::new(Barrier::new(2));
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let future_gate = Arc::clone(&gate);
+    let future_dropped = Arc::clone(&dropped);
+    let mut graph = Graph::<SendMode>::new();
+    let node = graph
+        .add_async("abort_race", schema! { () -> () }, move |_task, _inputs| {
+            BarrierThenPending {
+                gate: Arc::clone(&future_gate),
+                dropped: Arc::clone(&future_dropped),
+            }
+        })
+        .unwrap();
+    graph.set_active(node, true).unwrap();
+
+    let dispatcher = HoldingDispatcher::default();
+    let run = graph
+        .compile()
+        .unwrap()
+        .start_on(RunInputs::new(), dispatcher.clone())
+        .unwrap();
+    let control = run.control();
+    let mut run = Box::pin(run);
+    let driver_waker = Waker::from(Arc::new(NoopWake));
+    let mut driver_context = Context::from_waker(&driver_waker);
+    assert!(matches!(
+        run.as_mut().poll(&mut driver_context),
+        Poll::Pending
+    ));
+
+    let job = dispatcher.pop();
+    let (poll_tx, poll_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut job = Box::pin(job);
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        poll_tx.send(job.as_mut().poll(&mut context)).unwrap();
+    });
+
+    gate.wait();
+    control.abort();
+    gate.wait();
+    assert!(matches!(
+        poll_rx
+            .recv_timeout(WAIT)
+            .expect("the raced abort must finish NodeJob"),
+        Poll::Ready(())
+    ));
+    worker.join().unwrap();
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+
+    match block_on(run) {
+        Err(ExecuteError::Cancelled(report)) => {
+            assert_eq!(report.status(node), Some(NodeStatus::Cancelled));
+        }
+        _ => panic!("the raced abort must cancel the dispatched node"),
+    }
+}
+
 #[test]
 fn cancellation_does_not_hide_invalid_dispatched_outputs() {
     let mut graph = Graph::<SendMode>::new();
@@ -645,6 +895,21 @@ impl NodeDispatcher<SendMode> for HoldingDispatcher {
 struct NoopWake;
 impl Wake for NoopWake {
     fn wake(self: Arc<Self>) {}
+}
+
+#[derive(Default)]
+struct CountWake(std::sync::atomic::AtomicUsize);
+
+impl CountWake {
+    fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Wake for CountWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[test]
