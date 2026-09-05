@@ -7,8 +7,8 @@
 use std::rc::Rc;
 
 use slot_graph::{
-    outputs, schema, ExecutionGraphVersion, Graph, GraphRun, InputSlot, Local, OutputSlot,
-    RunControl, RunInputs, SendMode, Shared,
+    outputs, schema, BoundSchema, ExecutionGraphVersion, Graph, GraphRun, InputKey, InputSlot,
+    Local, OutputKey, OutputSlot, RunControl, RunInputs, SendMode, Shared,
 };
 
 fn assert_send<T: Send>() {}
@@ -61,7 +61,58 @@ fn shared_drops_the_value_after_its_last_owner() {
 fn typed_slot_handles_do_not_require_the_value_to_be_copy() {
     assert_copy::<InputSlot<NotClone>>();
     assert_copy::<OutputSlot<NotClone>>();
+    assert_copy::<InputKey<NotClone>>();
+    assert_copy::<OutputKey<NotClone>>();
     assert_copy::<slot_graph::RunInput<NotClone, Local>>();
+}
+
+// These functions are not called. Their bodies are compile contracts for the
+// bound-layout fast path: a key is Copy even when its payload is not, and the
+// Local/Send closure bounds stay equivalent to add_sync/add_async.
+#[allow(dead_code)]
+fn keyed_local_tasks_accept_non_send_payloads() {
+    let bound: BoundSchema = schema! { ("value": NotClone) -> ("out": NotClone) }.bind();
+    let input = bound.input::<NotClone>("value").unwrap();
+    let output = bound.output::<NotClone>("out").unwrap();
+    let mut graph = Graph::<Local>::new();
+    graph
+        .add_sync("keyed", bound.clone(), move |_, inputs| {
+            let value = inputs.required_key(input)?;
+            let mut outputs = slot_graph::NodeOutputs::new();
+            outputs.insert_key(output, NotClone(value.0));
+            Ok::<_, slot_graph::NodeError<Local>>(outputs)
+        })
+        .unwrap();
+    graph
+        .add_async("keyed_async", bound, move |_, inputs| async move {
+            let value = inputs.required_key(input)?;
+            let mut outputs = slot_graph::NodeOutputs::new();
+            outputs.insert_key(output, NotClone(value.0));
+            Ok::<_, slot_graph::NodeError<Local>>(outputs)
+        })
+        .unwrap();
+}
+
+#[allow(dead_code)]
+fn keyed_send_tasks_keep_send_bounds() {
+    let bound = schema! { ("value": u32) -> ("out": u32) }.bind();
+    let input = bound.input::<u32>("value").unwrap();
+    let output = bound.output::<u32>("out").unwrap();
+    let mut graph = Graph::<SendMode>::new();
+    graph
+        .add_sync("keyed", bound.clone(), move |_, inputs| {
+            let mut outputs = slot_graph::NodeOutputs::new();
+            outputs.insert_key(output, *inputs.required_key(input)?);
+            Ok::<_, slot_graph::NodeError<SendMode>>(outputs)
+        })
+        .unwrap();
+    graph
+        .add_async("keyed_async", bound, move |_, inputs| async move {
+            let mut outputs = slot_graph::NodeOutputs::new();
+            outputs.insert_key(output, *inputs.required_key(input)?);
+            Ok::<_, slot_graph::NodeError<SendMode>>(outputs)
+        })
+        .unwrap();
 }
 
 #[test]

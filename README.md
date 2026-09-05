@@ -2,7 +2,7 @@
 
 Slot Graph is a lightweight, embeddable typed slot graph for dependency-driven synchronous and asynchronous task execution.
 
-Version 0.3 is currently an **API skeleton**, not a working execution engine.
+Version 0.3.1 is currently an **API skeleton**, not a working execution engine.
 Public types, task signatures, integration tests and examples define the intended
 contract in [the design document](documents/design.md). Operations that require
 the implementation deliberately use `unimplemented!()`.
@@ -40,6 +40,15 @@ them reaches the unimplemented API until the execution engine is built.
 | [22_manual_driver.rs](examples/22_manual_driver.rs) | Drive a GraphRun with a poll loop and Waker |
 | [23_shared_fan_out.rs](examples/23_shared_fan_out.rs) | Share and forward a non-Clone payload |
 | [24_structured_errors.rs](examples/24_structured_errors.rs) | Recover from edit, compile, and startup errors |
+| [25_bound_task_io.rs](examples/25_bound_task_io.rs) | Resolve typed input/output keys before task execution |
+| [26_collect_into.rs](examples/26_collect_into.rs) | Collect explicit source nodes into one Many input |
+| [27_renderer_pipeline.rs](examples/27_renderer_pipeline.rs) | Combine seven render/UI nodes across two frames |
+
+Named task I/O remains convenient; BoundSchema keys provide a separate path
+designed to avoid runtime name/hash lookup. This is not an allocation-free or
+measured performance claim. `collect_into(sources, target_input)` adds ordinary
+edges only to the selected Many input; it does not introduce runtime discovery,
+flatten Vec values, or replace `connect_nodes` and its `auto_collect` flag.
 
 ## Source layout
 
@@ -48,8 +57,8 @@ re-exports. Definitions live in the corresponding responsibility modules:
 
 ```text
 mode.rs      Local / SendMode and admissible value types
-handles.rs   Graph, node, edge, and typed Slot identities
-schema.rs    Ordered input/output declarations and builders
+handles.rs   Graph/Slot identities and layout-scoped task keys
+schema.rs    Ordered declarations, builders, and immutable bound layouts
 value.rs     Shared ownership and task input/output bags
 task.rs      Repeatable task factories and per-task context
 graph.rs     Mutable declarations, edits, connections, compile entry
@@ -76,6 +85,7 @@ Behavioral contract tests are marked `#[ignore = "implementation pending"]`.
 They contain real API calls and expected results and are still type-checked.
 After implementing a behavior, remove its ignore marker and run the test.
 Passing the skeleton checks does not mean the graph execution contracts pass.
+See [the test guide](tests/README.md) for staged contract activation.
 
 The core has no third-party dependencies. `futures-lite` is only a development dependency
 used to exercise a host runtime; the core does not own an executor.

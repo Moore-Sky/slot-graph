@@ -1,7 +1,11 @@
 //! Ordered input/output declarations used to validate graph connections.
 //! Descriptors contain type metadata, not values. Mode bounds apply when values enter the graph.
+//! Bind an immutable task layout before creating closures that use keyed I/O.
 
-use crate::handles::{SlotId, SlotTypeId};
+use crate::{
+    error::EditError,
+    handles::{InputKey, OutputKey, SlotId, SlotTypeId},
+};
 use std::any::Any;
 
 /// States whether an input needs at least one source to compile.
@@ -67,6 +71,54 @@ pub struct Schema {
     pub outputs: Vec<OutputSpec>,
 }
 
+/// Immutable task-layout snapshot used to resolve names before execution.
+///
+/// Clones preserve the same opaque layout identity; independent calls to
+/// [`Schema::bind`] create different identities even for identical declarations.
+/// Sharing a clone among nodes intentionally permits those nodes to share keys.
+/// This is independent of graph Slot handles and their schema generations.
+///
+/// Freezing is not a validation certificate: every key lookup validates the
+/// complete local Schema before returning a key, and graph add/replace validates
+/// it too. Invalid descriptors can never issue a key or enter a runnable node.
+/// This allows ordinary Schema arguments to convert infallibly at the API
+/// boundary while keeping errors on existing fallible operations.
+/// Binding and key lookup remain unimplemented in this revision.
+#[derive(Clone, Debug)]
+pub struct BoundSchema {
+    schema: Schema,
+    _layout: u64,
+}
+
+impl BoundSchema {
+    /// Borrows the frozen declarations; there is no mutable layout access.
+    pub fn schema(&self) -> &Schema {
+        &self.schema
+    }
+
+    /// Validates the full Schema, then resolves an exact-typed input by name.
+    ///
+    /// InvalidSchema, UnknownSlotName, and TypeMismatch are edit errors.
+    /// The key retains input shape; task access must use the matching Required
+    /// One, Optional One, or Many accessor. Currently unimplemented.
+    pub fn input<T: Any>(&self, _name: &str) -> Result<InputKey<T>, EditError> {
+        unimplemented!()
+    }
+
+    /// Validates the full Schema, then resolves an exact-typed output by name.
+    /// Uses the same error categories as [`Self::input`]. Currently unimplemented.
+    pub fn output<T: Any>(&self, _name: &str) -> Result<OutputKey<T>, EditError> {
+        unimplemented!()
+    }
+}
+
+impl From<Schema> for BoundSchema {
+    /// Freezes an ordinary declaration; the receiving graph operation validates it.
+    fn from(schema: Schema) -> Self {
+        schema.bind()
+    }
+}
+
 impl InputSpec {
     /// Creates a required input accepting exactly one value of `T`.
     pub fn required_one<T: Any>(name: impl Into<String>) -> Self {
@@ -127,6 +179,15 @@ impl OutputSpec {
     }
 }
 impl Schema {
+    /// Consumes the descriptors into a fresh immutable task-layout snapshot.
+    ///
+    /// Resolve keys on the returned layout, capture them in the task, and pass
+    /// that layout to add_sync/add_async. Key lookups and graph registration
+    /// validate the complete declaration. This operation remains a stub.
+    pub fn bind(self) -> BoundSchema {
+        unimplemented!()
+    }
+
     /// Creates a schema from ordered input and output declarations.
     ///
     /// Local schema invariants are checked when the schema is added to or

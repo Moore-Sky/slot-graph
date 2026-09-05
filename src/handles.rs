@@ -1,5 +1,6 @@
 //! Graph-scoped identities, typed Slot handles, and delayed name selectors.
 //! Typed handles preserve schema generations; names are resolved by graph APIs.
+//! InputKey and OutputKey instead address one immutable task layout, not a graph.
 
 use std::{
     any::{Any, TypeId},
@@ -41,6 +42,64 @@ pub struct SlotId(pub u64);
 /// Process-local runtime type identity carried by schema descriptors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SlotTypeId(TypeId);
+
+/// Pre-resolved task input address issued by a [`BoundSchema`][crate::BoundSchema].
+///
+/// A key contains an opaque layout identity and dense, node-local index. It is
+/// valid for nodes deliberately registered with that same bound schema (or a
+/// clone), including old compiled versions. A separately bound schema rejects
+/// it even if the declarations look identical. Accessors also check input shape.
+/// Keys carry metadata only: `Copy` and mobility impose no bounds on `T`.
+/// Use [`InputSlot`] for graph connections and external inputs instead.
+pub struct InputKey<T: ?Sized> {
+    layout: u64,
+    index: usize,
+    _type: PhantomData<fn() -> T>,
+}
+
+/// Pre-resolved task output address issued by a [`BoundSchema`][crate::BoundSchema].
+///
+/// Like [`InputKey`], this is layout-scoped, not graph- or node-scoped. It is
+/// not interchangeable with an [`OutputSlot`] used for edges and reports.
+/// Keyed output insertion defers validation to the whole output commit.
+pub struct OutputKey<T: ?Sized> {
+    layout: u64,
+    index: usize,
+    _type: PhantomData<fn() -> T>,
+}
+
+macro_rules! impl_key_traits {
+    ($key:ident) => {
+        impl<T: ?Sized> Copy for $key<T> {}
+        impl<T: ?Sized> Clone for $key<T> {
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+        impl<T: ?Sized> PartialEq for $key<T> {
+            fn eq(&self, other: &Self) -> bool {
+                self.layout == other.layout && self.index == other.index
+            }
+        }
+        impl<T: ?Sized> Eq for $key<T> {}
+        impl<T: ?Sized> Hash for $key<T> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.layout.hash(state);
+                self.index.hash(state);
+            }
+        }
+        impl<T: ?Sized> fmt::Debug for $key<T> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(stringify!($key))
+                    .field("layout", &self.layout)
+                    .field("index", &self.index)
+                    .finish()
+            }
+        }
+    };
+}
+impl_key_traits!(InputKey);
+impl_key_traits!(OutputKey);
 
 impl SlotId {
     /// Creates a schema-level slot identity from an application-defined value.

@@ -1,6 +1,6 @@
 //! Typed dependency graphs for synchronous and asynchronous tasks.
 //!
-//! This v0.3 revision defines the public API and its contract tests. Graph
+//! This v0.3.1 revision defines the public API and its contract tests. Graph
 //! editing, compilation, and execution deliberately use `unimplemented!()`.
 //! Schema descriptors and the Shared ownership wrapper are usable.
 //!
@@ -31,6 +31,8 @@ pub use report::{NodeFailure, NodeStatus, RunReport};
 pub use runtime::{
     CancellationToken, Cancelled, GraphRun, GraphRunner, RunControl, RunInput, RunInputs, RunnerRun,
 };
-pub use schema::{Cardinality, InputSpec, OutputSpec, Presence, Schema, SchemaBuilder};
+pub use schema::{
+    BoundSchema, Cardinality, InputSpec, OutputSpec, Presence, Schema, SchemaBuilder,
+};
 pub use task::{LocalTaskResult, SendTaskResult, Task, TaskContext};
 pub use value::{NodeInputs, NodeOutputs, Shared};

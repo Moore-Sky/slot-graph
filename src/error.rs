@@ -26,6 +26,8 @@ pub enum NodeErrorKind {
     User,
     /// An unwind panic while invoking or polling a task.
     Panic,
+    /// Input access used a wrong name, type, layout, or declared input shape.
+    InvalidInputs,
     /// The returned output bag does not match the complete Schema.
     InvalidOutputs,
     /// The task observed a cancellation checkpoint.
@@ -92,6 +94,8 @@ error_type!(
         TypeMismatch,
         /// The input would have more sources than allowed.
         CardinalityOverflow,
+        /// Explicit bulk collection requires a Many input, not a One input.
+        ExpectedManyInput,
         /// The same output/input connection already exists.
         DuplicateEdge,
         /// An input cannot combine exposed and ordinary producers.

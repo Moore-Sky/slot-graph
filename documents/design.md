@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.3**
+**Version: 0.3.1**
 
-This is the authoritative 0.3 design. It defines observable behavior rather
+This is the authoritative 0.3.1 design. It defines observable behavior rather
 than a mandated implementation.
 
 The current crate is an API skeleton: examples and contract tests compile, but
@@ -150,7 +150,11 @@ auto_collect changes alone do not remove compatible edges.
 Selected compilation validates Schema, required inputs, bindings, exact types,
 cardinality, and cycles; it lowers Slot bindings into dense execution data and
 deduplicates node dependencies. Hot execution does no name/hash lookup or
-dynamic declaration traversal. 0.3 uses full, not incremental, compilation.
+dynamic declaration traversal for scheduling and edge delivery. Successful
+keyed task I/O also avoids name/hash lookup; named task I/O is a convenience
+path that may resolve names during execution. Error diagnostics may use names.
+These guarantees do not imply allocation-free execution or measured speed.
+0.3 uses full, not incremental, compilation.
 
 ## Local, Send, execution, and cancellation
 
@@ -216,6 +220,101 @@ Cancellation is a linearized race, not a simple pre-commit check. After Future r
 
 For `Many + auto_collect`, automatic connection collects **all** remaining exact-type-compatible source outputs; it never applies One's name-first rule. Existing edges are skipped and retain their earlier binding order; new edges are atomically appended in source Schema order. One alone uses exact name+type, then only a unique type fallback.
 
+## Task I/O: names or pre-bound keys
+
+Use names for straightforward tasks. Use a bound layout when a frequently run
+task should not resolve names on each invocation:
+
+```rust
+let layout = schema! { ("value": u32) -> ("answer": u32) }.bind();
+let value = layout.input::<u32>("value")?;
+let answer = layout.output::<u32>("answer")?;
+let scale = graph.add_sync("scale", layout, move |_, inputs| {
+    let mut outputs = NodeOutputs::new();
+    outputs.insert_key(answer, *inputs.required_key(value)? * 2);
+    Ok(outputs)
+})?;
+```
+
+[`25_bound_task_io.rs`](../examples/25_bound_task_io.rs) is the complete example,
+including an Optional input and a per-run external value. Required One,
+Optional One, and either Many use `required_key`, `optional_key`, and `many_key`
+respectively. `insert_shared_key` forwards existing Shared ownership. The
+named `outputs!` macro remains convenient but is not a keyed fast-path promise.
+Named and keyed writes may coexist; addressing the same output twice by either
+form is a duplicate and fails the whole output commit.
+
+`Schema::bind` consumes mutable descriptors into an immutable `BoundSchema`.
+Freezing is infallible and is not proof of validity: both key lookup methods
+validate the **whole** local Schema before issuing any key, and graph add/replace
+validates it too. Bad descriptors yield InvalidSchema at those fallible
+boundaries. Unknown names and wrong types yield UnknownSlotName and TypeMismatch.
+Ordinary Schema arguments still work through conversion to a fresh binding.
+
+Task keys are opaque typed addresses into a bound layout, not graph Slot handles
+or user-supplied integer indices. Keyed reads validate layout, type, index, and
+input shape; misuse yields InvalidInputs. Keyed writes are validated against the
+executing node at complete-output commit; invalid keys yield InvalidOutputs and
+publish nothing. Many still returns shared values in binding order and may
+allocate its result vector; keyed access does not change ownership or readiness.
+
+Cloning BoundSchema retains layout identity. Nodes intentionally registered with
+the same clone may share keys. Separately binding identical declarations creates
+a different identity; keys are not interchangeable. Mutating a separate Schema
+copy never changes a bound snapshot. `replace_sync` and `replace_async` preserve
+the layout, edges, and old versions just like `replace_task`. `replace_schema`
+with a fresh binding rejects old keys in the new task; reusing the same bound
+clone preserves task keys. Graph-facing Slot handles still become stale in
+either case. Old compiled versions retain their own layouts and keys.
+
+## Explicit collection into one Many input
+
+`collect_into` is an explicit bulk-connect convenience for a Many input, not a
+new auto-collection or runtime mechanism. Keep `auto_collect` for `connect_nodes`;
+explicit collection does not require or modify that flag.
+
+```rust
+let edges = graph.collect_into(sources, lighting.input("shadows"))?;
+// A typed InputSlot<ShadowContribution> is accepted here as well.
+```
+
+Unlike repeated `connect_nodes(source, lighting)`, this operation considers only
+the selected input. A `camera`, `config`, or second Many input on the same node
+is untouched. [`26_collect_into.rs`](../examples/26_collect_into.rs) demonstrates
+selected producers, multiple compatible outputs, unrelated inputs, and repeats.
+
+- Sources are explicit NodeIds; there is no whole-graph or transitive search.
+- After resolving the target, scan each source's output Schema and collect all
+  outputs of exactly the target element type, regardless of output name.
+- Existing bindings keep their order. Append new edges in source-argument order,
+  then source output declaration order. Callers must supply an ordered iterator
+  when reproducibility matters; completion time and hash order never define it.
+- Skip repeated sources and existing output/input pairs. Different output slots
+  remain separate even if their values share the same resource. Return only
+  newly created EdgeIds; repeating an unchanged collection returns an empty list.
+- Validate the target and every source before applying the batch. Any stale or
+  foreign handle, invalid selector, or other edit error leaves all edges unchanged.
+  A One target is ExpectedManyInput. An exposed target is InputSourceConflict,
+  including when the source list is empty.
+- Empty lists or no matching outputs create no edges. An unsatisfied Required
+  Many fails at compile; an Optional Many can remain empty. Cycles are checked
+  at compile, as with ordinary connect.
+
+`Many<T>` collects individually produced T values; an output `Vec<T>` is one
+different value type and is never implicitly flattened. A texture inventory may
+use `Many<TextureHandle>`, but shading should prefer a semantic payload such as
+`Many<ShadowContribution>` containing light identity, texture, and transforms.
+UI layers similarly carry ordering/clip metadata; CSS batches retain cascade
+metadata. Collection does not infer roles, sort by those rules, copy GPU data,
+or allocate a texture array.
+
+Compile and runtime see only the resulting ordinary edges. Their existing Many
+readiness applies: wait for all connected producers; upstream failure blocks the
+consumer. Optional permits absence, not ignoring a failed connected producer.
+Collection is not a standing subscription: later schema edits do not discover new
+outputs automatically. Call it again explicitly, then compile a new version;
+already compiled versions are unchanged.
+
 ## Combining the APIs
 
 The complete numbered examples are the executable form of these usage patterns:
@@ -238,6 +337,30 @@ The complete numbered examples are the executable form of these usage patterns:
 | Supply a host poll loop and Waker | [22_manual_driver.rs](../examples/22_manual_driver.rs) |
 | Forward shared values through fan-out | [23_shared_fan_out.rs](../examples/23_shared_fan_out.rs) |
 | Handle edit, compile, and startup errors | [24_structured_errors.rs](../examples/24_structured_errors.rs) |
+| Bind typed task input/output keys once | [25_bound_task_io.rs](../examples/25_bound_task_io.rs) |
+| Collect selected producers into one Many input | [26_collect_into.rs](../examples/26_collect_into.rs) |
+| Assemble a seven-node renderer-style pipeline | [27_renderer_pipeline.rs](../examples/27_renderer_pipeline.rs) |
+
+### A complete frame preparation pipeline
+
+[`27_renderer_pipeline.rs`](../examples/27_renderer_pipeline.rs) combines the API
+in a seven-node, two-frame example:
+
+```text
+Cull --+--> ShadowA --+
+       +--> ShadowB --+--> Lighting --+
+       +--> GBuffer --+               +--> Composite
+UiPrepare ---------------------------+
+```
+
+RunInputs supply scene/UI frame data. Culling fans out; two shadow passes use a
+shared bound layout, and `collect_into` feeds their ShadowContribution outputs
+only into Lighting's Many input. Async UI preparation joins the lighting result
+at the Active Composite target. All task reads/writes use keys. Two runs reuse a
+runner, check frame-specific output values, and transfer the final Shared value
+with `take_output`. The example uses simulated host resource IDs, not a GPU
+backend: allocation, command submission, fences, and retirement remain external,
+and graph completion does not imply GPU completion.
 
 ### Host driving and target outputs
 
@@ -266,10 +389,10 @@ format. The intended kind matrix is:
 
 | Phase | Kinds |
 | --- | --- |
-| Edit | `DuplicateNodeName`, `InvalidNodeName`, `InvalidSchema`, `UnknownNodeName`, `UnknownSlotName`, `StaleNodeId`, `StaleSlotHandle`, `StaleEdgeId`, `ForeignHandle`, `WrongDirection`, `TypeMismatch`, `CardinalityOverflow`, `DuplicateEdge`, `InputSourceConflict`, `AmbiguousAutoMatch` |
+| Edit | `DuplicateNodeName`, `InvalidNodeName`, `InvalidSchema`, `UnknownNodeName`, `UnknownSlotName`, `StaleNodeId`, `StaleSlotHandle`, `StaleEdgeId`, `ForeignHandle`, `WrongDirection`, `TypeMismatch`, `CardinalityOverflow`, `ExpectedManyInput`, `DuplicateEdge`, `InputSourceConflict`, `AmbiguousAutoMatch` |
 | Compile | `MissingRequiredInput`, `NoActiveTarget`, `CycleDetected`, `InvalidBinding` |
 | Start | `MissingRunInput`, `DuplicateRunInput`, `UnexpectedRunInput`, `RunInputCardinality`, `RunInputTypeMismatch` |
-| Node | `User`, `Panic`, `InvalidOutputs`, `Cancelled`, `InternalInvariantViolation` |
+| Node | `User`, `Panic`, `InvalidInputs`, `InvalidOutputs`, `Cancelled`, `InternalInvariantViolation` |
 | Report | `NotCollected`, `OutputUnavailable`, `OutputTaken`, `ForeignHandle`, `StaleSlotHandle`, `TypeMismatch` |
 | Execute | `Start`, `Failed`, `Cancelled` |
 
@@ -284,7 +407,9 @@ bypassing the final run report.
 
 ### Required verification and definition of done
 
-The release test matrix covers ordinary edges; multi-input/output; fan-out; a
+The release test matrix covers pre-bound input/output keys and layout isolation;
+mixed named/keyed output atomicity; explicit single-target collection and batch
+rollback; ordinary edges; multi-input/output; fan-out; a
 node pair with many Slot bindings but one wake-up; every Presence/Cardinality
 combination; deterministic Many order; automatic-match ambiguity and atomicity;
 sync, async, and mixed polling; Pending/wake behavior; complete atomic outputs;

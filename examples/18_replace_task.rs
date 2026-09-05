@@ -1,7 +1,7 @@
 //! Replace a node factory without changing its Schema, edges, or old versions.
 //! Graph operations intentionally panic in the current API skeleton.
 use futures_lite::future::block_on;
-use slot_graph::{outputs, schema, Graph, Local, RunInputs, Task};
+use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut graph = Graph::<Local>::new();
@@ -11,13 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     graph.set_active(node, true)?;
     let output = graph.output::<u32>(node, "value")?;
     let v1 = graph.compile()?;
-    graph.replace_task(
-        node,
-        Task::<Local>::asynchronous(|_, _| async {
-            futures_lite::future::yield_now().await;
-            Ok(outputs! { "value" => 2_u32 })
-        }),
-    )?;
+    graph.replace_async(node, |_, _| async {
+        futures_lite::future::yield_now().await;
+        Ok(outputs! { "value" => 2_u32 })
+    })?;
     let v2 = graph.compile()?;
     let before = block_on(v1.execute(RunInputs::new()))?;
     let after = block_on(v2.execute(RunInputs::new()))?;

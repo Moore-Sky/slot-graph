@@ -44,7 +44,9 @@ pub type LocalTaskResult = Result<NodeOutputs<Local>, NodeError<Local>>;
 /// Result returned by a SendMode task or its Future.
 pub type SendTaskResult = Result<NodeOutputs<SendMode>, NodeError<SendMode>>;
 
-/// An owned, repeatable task factory used by `replace_task`.
+/// An owned, repeatable task factory used by `replace_task` and `replace_schema`.
+/// Graph::replace_sync and Graph::replace_async are convenient typed alternatives
+/// when replacing a task without changing its schema.
 pub struct Task<M: Mode> {
     _mode: PhantomData<M>,
 }

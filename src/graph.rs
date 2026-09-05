@@ -29,7 +29,7 @@ use crate::{
     handles::*,
     mode::{Local, Mode, SendMode, ValueFor},
     runtime::RunInput,
-    schema::Schema,
+    schema::BoundSchema,
     task::*,
 };
 use std::{
@@ -77,10 +77,13 @@ impl<M: Mode> Graph<M> {
     /// Compatible edges retain their identity and order; incompatible edges
     /// and external-input bindings are listed in the returned report. All old
     /// typed slot handles for the node become stale after success.
+    /// Task keys follow bound-layout identity instead: a fresh binding rejects
+    /// old keys, whereas passing the same BoundSchema clone preserves them.
+    /// Previously compiled versions retain their own layouts in either case.
     pub fn replace_schema(
         &mut self,
         _node: NodeId,
-        _schema: Schema,
+        _schema: impl Into<BoundSchema>,
         _task: Task<M>,
     ) -> Result<SchemaReplaceReport, EditError> {
         unimplemented!()
@@ -148,6 +151,32 @@ impl<M: Mode> Graph<M> {
     ) -> Result<AutoConnectReport, EditError> {
         unimplemented!()
     }
+
+    /// Atomically connects matching outputs from explicit sources to one Many input.
+    ///
+    /// This is a graph-edit convenience, not a new execution mechanism. It
+    /// resolves only the selected target input, then scans each supplied node's
+    /// output schema for exact type matches. It never scans other nodes, touches
+    /// other inputs, flattens Vec values, or requires/enables auto_collect.
+    ///
+    /// Existing edges keep their order. New edges follow source iterator order,
+    /// then source output declaration order. Repeated sources and existing
+    /// output/input pairs are skipped. Distinct output slots remain distinct
+    /// even if their values share underlying ownership. Only new EdgeIds return.
+    ///
+    /// All sources and the target are validated before any edits are applied.
+    /// One inputs fail with ExpectedManyInput; exposed targets fail with
+    /// InputSourceConflict even for an empty source list. No matches succeed
+    /// with an empty result; missing Required input and cycles are compile errors.
+    /// Both typed input handles and delayed name selectors are accepted.
+    /// Currently unimplemented, like ordinary connect.
+    pub fn collect_into<I: IntoIterator<Item = NodeId>>(
+        &mut self,
+        _sources: I,
+        _input: impl Into<InputSlotSelector>,
+    ) -> Result<Vec<EdgeId>, EditError> {
+        unimplemented!()
+    }
     /// Exposes an otherwise unproduced input as a per-run external entry.
     ///
     /// An exposed input cannot also have a normal producer. Compiled versions
@@ -185,10 +214,11 @@ impl Graph<Local> {
         Self::new_inner()
     }
     /// Adds a repeatable synchronous local task with its schema.
+    /// Accepts ordinary declarations or a pre-bound task layout with keyed I/O.
     pub fn add_sync<F>(
         &mut self,
         name: impl Into<String>,
-        schema: Schema,
+        schema: impl Into<BoundSchema>,
         task: F,
     ) -> Result<NodeId, EditError>
     where
@@ -201,7 +231,7 @@ impl Graph<Local> {
     pub fn add_async<F, Fut>(
         &mut self,
         name: impl Into<String>,
-        schema: Schema,
+        schema: impl Into<BoundSchema>,
         task: F,
     ) -> Result<NodeId, EditError>
     where
@@ -209,6 +239,27 @@ impl Graph<Local> {
         Fut: Future<Output = LocalTaskResult> + 'static,
     {
         let _ = (name, schema, task);
+        unimplemented!()
+    }
+
+    /// Replaces a local synchronous factory without changing schema or edges.
+    ///
+    /// Equivalent to replace_task with Task::sync. The bound layout and old
+    /// compiled versions remain unchanged. Currently unimplemented.
+    pub fn replace_sync<F>(&mut self, _node: NodeId, _task: F) -> Result<(), EditError>
+    where
+        F: Fn(TaskContext<Local>, NodeInputs<Local>) -> LocalTaskResult + 'static,
+    {
+        unimplemented!()
+    }
+
+    /// Replaces a local asynchronous factory; each run receives a fresh Future.
+    /// Preserves schema, layout, edges, and old versions. Currently unimplemented.
+    pub fn replace_async<F, Fut>(&mut self, _node: NodeId, _task: F) -> Result<(), EditError>
+    where
+        F: Fn(TaskContext<Local>, NodeInputs<Local>) -> Fut + 'static,
+        Fut: Future<Output = LocalTaskResult> + 'static,
+    {
         unimplemented!()
     }
 }
@@ -222,7 +273,7 @@ impl Graph<SendMode> {
     pub fn add_sync<F>(
         &mut self,
         name: impl Into<String>,
-        schema: Schema,
+        schema: impl Into<BoundSchema>,
         task: F,
     ) -> Result<NodeId, EditError>
     where
@@ -239,7 +290,7 @@ impl Graph<SendMode> {
     pub fn add_async<F, Fut>(
         &mut self,
         name: impl Into<String>,
-        schema: Schema,
+        schema: impl Into<BoundSchema>,
         task: F,
     ) -> Result<NodeId, EditError>
     where
@@ -247,6 +298,28 @@ impl Graph<SendMode> {
         Fut: Future<Output = SendTaskResult> + Send + 'static,
     {
         let _ = (name, schema, task);
+        unimplemented!()
+    }
+
+    /// Replaces a Send + Sync synchronous factory without changing its layout.
+    /// Preserves schema, edges, and old compiled versions. Currently unimplemented.
+    pub fn replace_sync<F>(&mut self, _node: NodeId, _task: F) -> Result<(), EditError>
+    where
+        F: Fn(TaskContext<SendMode>, NodeInputs<SendMode>) -> SendTaskResult
+            + Send
+            + Sync
+            + 'static,
+    {
+        unimplemented!()
+    }
+
+    /// Replaces a Send + Sync asynchronous factory producing fresh Send Futures.
+    /// Preserves schema, layout, edges, and old versions. Currently unimplemented.
+    pub fn replace_async<F, Fut>(&mut self, _node: NodeId, _task: F) -> Result<(), EditError>
+    where
+        F: Fn(TaskContext<SendMode>, NodeInputs<SendMode>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = SendTaskResult> + Send + 'static,
+    {
         unimplemented!()
     }
 }

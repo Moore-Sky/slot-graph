@@ -32,6 +32,11 @@ macro_rules! schema {
 
 /// Builds the complete, uncommitted output bag returned by a task.
 ///
+/// This is the named convenience path, not the lookup-free keyed path. Use
+/// [`NodeOutputs::insert_key`][crate::NodeOutputs::insert_key] and
+/// [`NodeOutputs::insert_shared_key`][crate::NodeOutputs::insert_shared_key]
+/// with pre-bound output keys when names must be resolved before execution.
+///
 /// Duplicate, missing, unexpected, or incorrectly typed outputs are validated
 /// together at commit time. Output storage remains unimplemented in this revision.
 ///
