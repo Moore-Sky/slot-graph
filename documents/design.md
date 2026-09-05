@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.0**
+**Version: 0.4.1**
 
-This is the authoritative 0.4.0 design. It defines observable behavior rather
+This is the authoritative 0.4.1 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose

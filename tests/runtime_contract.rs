@@ -9,13 +9,16 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        mpsc, Arc, Mutex,
     },
     task::{Context, Poll, Wake, Waker},
+    thread,
+    time::Duration,
 };
 
 use slot_graph::{
     outputs, schema, ExecuteError, Graph, Local, NodeStatus, OutputAccessErrorKind, RunInputs,
+    SendMode,
 };
 
 struct NoopWake;
@@ -537,4 +540,67 @@ fn commit_before_cancel_keeps_the_already_committed_target_output() {
         }
         _ => panic!("expected cancelled report"),
     }
+}
+
+/// A synchronous executor may invoke `wake` before the caller that requested
+/// cancellation returns. The wake below re-enters cancellation deliberately;
+/// runtime locks must already have been released at that point.
+#[test]
+fn synchronous_waker_can_reenter_cancel_without_deadlocking() {
+    struct ReenterCancel {
+        control: Mutex<Option<slot_graph::RunControl<SendMode>>>,
+        entered: std::sync::atomic::AtomicBool,
+    }
+
+    impl Wake for ReenterCancel {
+        fn wake(self: Arc<Self>) {
+            if !self.entered.swap(true, Ordering::SeqCst) {
+                self.control
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .expect("control is installed before the first poll")
+                    .cancel();
+            }
+        }
+    }
+
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut graph = Graph::<SendMode>::new();
+        let node = graph
+            .add_async("wait", schema! { () -> () }, |task, _inputs| {
+                let cancelled = task.cancellation().cancelled();
+                async move {
+                    cancelled.await;
+                    Ok::<_, slot_graph::NodeError<SendMode>>(outputs! {})
+                }
+            })
+            .unwrap();
+        graph.set_active(node, true).unwrap();
+
+        let run = graph.compile().unwrap().start(RunInputs::new()).unwrap();
+        let control = run.control();
+        let wake = Arc::new(ReenterCancel {
+            control: Mutex::new(Some(control.clone())),
+            entered: std::sync::atomic::AtomicBool::new(false),
+        });
+        let waker = Waker::from(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+        let mut run = Box::pin(run);
+
+        assert!(matches!(run.as_mut().poll(&mut context), Poll::Pending));
+        control.cancel();
+        assert!(wake.entered.load(Ordering::SeqCst));
+        assert!(matches!(
+            futures_lite::future::block_on(run),
+            Err(ExecuteError::Cancelled(_))
+        ));
+        done_tx.send(()).unwrap();
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("a synchronous re-entrant wake deadlocked cancellation");
+    worker.join().unwrap();
 }

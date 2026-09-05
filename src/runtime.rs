@@ -74,10 +74,17 @@ impl CancelState {
     }
 
     fn wake_all(&self) {
-        if let Some(waker) = self.driver.lock().unwrap().take() {
+        // A Waker is permitted to synchronously re-enter its executor. Never
+        // invoke it while one of this run's coordination locks is held.
+        let driver = self.driver.lock().unwrap().take();
+        let waiters = {
+            let mut waiters = self.waiters.lock().unwrap();
+            std::mem::take(&mut *waiters)
+        };
+        if let Some(waker) = driver {
             waker.wake();
         }
-        for waker in self.waiters.lock().unwrap().drain(..) {
+        for waker in waiters {
             waker.wake();
         }
     }
@@ -256,7 +263,10 @@ impl<M: Mode> JobQueue<M> {
 
     fn push(&self, event: JobEvent<M>) {
         self.events.lock().unwrap().push_back(event);
-        if let Some(waker) = self.driver.lock().unwrap().take() {
+        // See CancelState::wake_all: releasing the driver lock before wake is
+        // required for synchronous executor implementations.
+        let driver = self.driver.lock().unwrap().take();
+        if let Some(waker) = driver {
             waker.wake();
         }
     }
@@ -839,10 +849,12 @@ impl<M: Mode> Unpin for GraphRun<M> {}
 
 impl<M: Mode> Drop for GraphRun<M> {
     fn drop(&mut self) {
-        let _start = self.cancel.start_gate.lock().unwrap();
-        self.job_queue.retired.store(true, Ordering::Release);
-        self.cancel.cancelled.store(true, Ordering::Release);
-        self.cancel.aborted.store(true, Ordering::Release);
+        {
+            let _start = self.cancel.start_gate.lock().unwrap();
+            self.job_queue.retired.store(true, Ordering::Release);
+            self.cancel.cancelled.store(true, Ordering::Release);
+            self.cancel.aborted.store(true, Ordering::Release);
+        }
         self.cancel.wake_all();
     }
 }
@@ -1165,15 +1177,19 @@ impl<M: Mode> Clone for RunControl<M> {
 impl<M: Mode> RunControl<M> {
     /// Requests cooperative cancellation and prevents new task claims.
     pub fn cancel(&self) {
-        let _start = self.state.start_gate.lock().unwrap();
-        self.state.cancelled.store(true, Ordering::Release);
+        {
+            let _start = self.state.start_gate.lock().unwrap();
+            self.state.cancelled.store(true, Ordering::Release);
+        }
         self.state.wake_all();
     }
     /// Prevents new task claims and requests pending futures be dropped.
     pub fn abort(&self) {
-        let _start = self.state.start_gate.lock().unwrap();
-        self.state.cancelled.store(true, Ordering::Release);
-        self.state.aborted.store(true, Ordering::Release);
+        {
+            let _start = self.state.start_gate.lock().unwrap();
+            self.state.cancelled.store(true, Ordering::Release);
+            self.state.aborted.store(true, Ordering::Release);
+        }
         self.state.wake_all();
     }
 }
