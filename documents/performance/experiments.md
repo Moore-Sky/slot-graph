@@ -59,7 +59,7 @@ why the decision follows the stated rule.]`
 
 | ID | Strategy | Entry condition | Status |
 | --- | --- | --- | --- |
-| `E-01` | Direct internal synchronous-task path | A baseline profile shows immediate-ready task boxing/polling is material | Planned |
+| `E-01` | Direct internal synchronous-task path | Differential allocations plus source inspection show one ready-Future box per synchronous node | Running |
 | `E-02` | Reuse `GraphRunner` run buffers and capacities | Allocation probe identifies reusable-run allocation cost | Planned |
 | `E-03` | Wake-driven runnable tracking | Pending-heavy async profile identifies full-vector polling cost | Planned |
 | `E-04` | Compile-time incoming-edge and output indexes | Compile profile identifies repeated full-edge scans | Planned |
@@ -67,6 +67,28 @@ why the decision follows the stated rule.]`
 | `E-06` | Hash strategy A/B | Lookup/profile evidence identifies a hash-table hotspot | Planned |
 | `E-07` | Dispatch-contention primitives | Dispatch profile proves queue or lock contention | Planned |
 
+## Diagnostic Measurement: A/B/C/D
+
+| Field | Value |
+| --- | --- |
+| Status | Complete |
+| Date | 2026-09-05, Asia/Tokyo |
+| Revision | `2fb4f75f753e3fe3c6bb9def534a578a817b469a` |
+| Timing artifacts | [v0.5.0-diagnostics.csv](v0.5.0-diagnostics.csv) |
+| Allocation artifacts | [v0.5.0-diagnostic-allocations.csv](v0.5.0-diagnostic-allocations.csv) |
+| Timing command | `cargo +stable bench --locked --bench runtime_sync -- diagnostic_ --save-baseline v0.5.0-diag-r<N> --warm-up-time 3 --measurement-time 10 --sample-size 100 --confidence-level 0.99 --significance-level 0.01` |
+| Allocation command | `cargo +stable bench --locked --bench allocations` |
+| CPU profile attempt | `wpr.exe -start CPU -filemode`, followed by `cargo +stable bench --locked --profile profiling --bench runtime_sync -- diagnostic_b/scalar_chain/reusable/bound/100 --profile-time 30` |
+| CPU profile result | Blocked before the benchmark: Windows rejected system profiling policy with `0xc5585011`; no ETL or CPU attribution was produced |
+
+A reusable empty-node run costs 11.909 us and 103 allocation calls for 100
+nodes. Adding scalar Slot delivery raises this to 47.716 us and 901 calls.
+Adding the 10x10 fan-out/fan-in `Many` topology raises it to 59.209 us and
+1,146 calls. The fixed one-worker dispatcher increases the independent Ready
+workload from 29.443 us inline to 56.035 us while adding only five allocation
+calls. These differences select E-01 as the first isolated core experiment;
+dispatcher work remains separate.
+
 ## Completed Experiments
 
-No experiments have been measured yet.
+No implementation experiment has completed yet.

@@ -1,0 +1,10 @@
+workload,allocation_calls,gross_requested_bytes,peak_live_delta_bytes,end_live_delta_bytes,iterations
+diagnostic_a/active_empty/fresh/100,116,33484,25292,0,100
+diagnostic_a/active_empty/reusable/100,103,14568,7368,0,100
+diagnostic_b/scalar_chain/fresh/bound/100,1108,75588,46828,0,100
+diagnostic_b/scalar_chain/reusable/bound/100,901,42752,13992,0,100
+diagnostic_c/fanout_fanin_many/fresh/bound/100,1346,115500,46732,0,100
+diagnostic_c/fanout_fanin_many/reusable/bound/100,1146,83336,14664,0,100
+diagnostic_d/independent_ready_send/inline/reusable/100,609,52680,28184,0,100
+diagnostic_d/independent_ready_send/mutex_mpsc_workers_1/reusable/100,614,70108,22187,0,100
+diagnostic_d/independent_ready_send/mutex_mpsc_workers_8/reusable/100,615,71381,22824,0,100
