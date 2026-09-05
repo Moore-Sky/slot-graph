@@ -1,5 +1,5 @@
-//! Per-run inputs, Future driving, cancellation controls, and reusable runners.
-//! All scheduling, cancellation, and binding operations remain unimplemented.
+//! Per-run inputs, Future driving, optional Ready-node dispatch, cancellation,
+//! and reusable runners. All runtime operations remain unimplemented.
 //!
 //! ```compile_fail
 //! use slot_graph::{Graph, Local, RunInputs};
@@ -17,19 +17,90 @@
 //! let second = runner.start(RunInputs::new()).unwrap();
 //! let _ = (first, second);
 //! ```
+//!
+//! A Local node job cannot enter a cross-thread worker pool:
+//! ```compile_fail
+//! use slot_graph::{Local, NodeJob};
+//! fn assert_send<T: Send>() {}
+//! assert_send::<NodeJob<Local>>();
+//! ```
 
 use crate::{
-    error::{ExecuteError, NodeError, StartError},
-    handles::InputSlot,
+    error::{DispatchError, ExecuteError, NodeError, StartError},
+    handles::{InputSlot, NodeId},
     mode::{Mode, ValueFor},
     report::RunReport,
 };
 use std::{
+    cell::Cell,
     future::Future,
-    marker::PhantomData,
+    marker::{PhantomData, PhantomPinned},
     pin::Pin,
     task::{Context, Poll},
 };
+
+/// One Ready node invocation that an external dispatcher may schedule.
+///
+/// The job owns the immutable input snapshot and invokes or polls exactly one
+/// node task. For SendMode it is Send and may enter a work-stealing pool; for
+/// Local it is !Send and must remain on its owner thread. It is deliberately
+/// !Sync and !Unpin: ownership transfers to one executor task, which must never
+/// poll it concurrently.
+///
+/// Completion, validated outputs, panic, or premature job drop is reported to
+/// the originating GraphRun through private shared state. The job never commits
+/// outputs or unlocks successors itself. Dropping an accepted job is observable
+/// as a Dispatch node failure unless the run has already cancelled that
+/// invocation. The runtime storage remains unimplemented in this revision.
+#[must_use = "a node job must be scheduled or explicitly rejected"]
+pub struct NodeJob<M: Mode> {
+    node: NodeId,
+    _mode: PhantomData<M>,
+    _not_sync: PhantomData<Cell<()>>,
+    _pinned: PhantomPinned,
+}
+
+impl<M: Mode> NodeJob<M> {
+    /// Returns the declaration node identity, for diagnostics or priority mapping.
+    pub fn node_id(&self) -> NodeId {
+        self.node
+    }
+}
+
+impl<M: Mode> Future for NodeJob<M> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        unimplemented!()
+    }
+}
+
+/// Executor-neutral boundary for scheduling individual Ready nodes.
+///
+/// Returning Ok transfers responsibility for polling the job to completion or
+/// dropping it. A dropped accepted job reports a Dispatch failure back to its
+/// run. Returning Err means this Ready node was rejected; GraphRun records the
+/// same failure category and continues independent branches. Implementations
+/// should enqueue promptly rather than block the GraphRun poller. An accepted
+/// job must not be leaked: the core cannot detect a host that neither polls nor
+/// drops it, and the associated run may remain pending indefinitely.
+///
+/// The trait is intentionally unaware of threads, priorities, pools, and I/O.
+/// Send execution entry points additionally require the dispatcher to be Send
+/// and Sync; Local entry points permit owned, thread-affine implementations.
+pub trait NodeDispatcher<M: Mode>: 'static {
+    /// Accepts ownership of one independently runnable node job.
+    fn dispatch(&self, job: NodeJob<M>) -> Result<(), DispatchError>;
+}
+
+impl<M: Mode, F> NodeDispatcher<M> for F
+where
+    F: Fn(NodeJob<M>) -> Result<(), DispatchError> + 'static,
+{
+    fn dispatch(&self, job: NodeJob<M>) -> Result<(), DispatchError> {
+        self(job)
+    }
+}
 
 /// Cooperative cancellation state copied into every task context.
 pub struct CancellationToken<M: Mode> {
@@ -112,6 +183,10 @@ impl<M: Mode> Default for RunInputs<M> {
     }
 }
 /// An owned future that drives one graph execution.
+///
+/// Default runs poll Ready nodes inline. Runs created with an external
+/// dispatcher remain the sole DAG orchestrator: they submit jobs, consume
+/// completion notifications, atomically commit outputs, and unlock successors.
 pub struct GraphRun<M: Mode> {
     _mode: PhantomData<M>,
 }
@@ -148,6 +223,10 @@ impl<M: Mode> RunControl<M> {
 }
 
 /// Exclusive reusable storage for sequential graph runs.
+///
+/// A dispatcher-backed runner may allocate a fresh per-run generation when a
+/// pending run is dropped; late jobs can therefore never write into storage
+/// already reused by a later run.
 pub struct GraphRunner<M: Mode> {
     _mode: PhantomData<M>,
 }

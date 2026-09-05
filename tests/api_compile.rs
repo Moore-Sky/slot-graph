@@ -7,8 +7,9 @@
 use std::rc::Rc;
 
 use slot_graph::{
-    outputs, schema, BoundSchema, ExecutionGraphVersion, Graph, GraphRun, InputKey, InputSlot,
-    Local, OutputKey, OutputSlot, RunControl, RunInputs, SendMode, Shared,
+    outputs, schema, BoundSchema, DispatchError, ExecutionGraphVersion, Graph, GraphRun, InputKey,
+    InputSlot, Local, NodeDispatcher, NodeJob, OutputKey, OutputSlot, RunControl, RunInputs,
+    SendMode, Shared,
 };
 
 fn assert_send<T: Send>() {}
@@ -27,6 +28,38 @@ fn send_public_values_have_the_documented_mobility() {
     assert_sync::<RunControl<SendMode>>();
     assert_send::<Shared<u32, SendMode>>();
     assert_sync::<Shared<u32, SendMode>>();
+    assert_send::<NodeJob<SendMode>>();
+}
+
+// These bodies deliberately do not execute a graph. They make the external
+// dispatch boundary part of the checked public contract: Send jobs can cross
+// workers, while Local dispatchers may capture thread-affine state.
+#[allow(dead_code)]
+fn dispatchers_preserve_mode_bounds() {
+    fn accepts_send<D: NodeDispatcher<SendMode> + Send + Sync>(_: D) {}
+    fn accepts_local<D: NodeDispatcher<Local>>(_: D) {}
+
+    accepts_send(|_job: NodeJob<SendMode>| Ok::<_, DispatchError>(()));
+
+    let local_state = Rc::new(std::cell::Cell::new(0_u32));
+    accepts_local(move |_job: NodeJob<Local>| {
+        local_state.set(local_state.get() + 1);
+        Ok::<_, DispatchError>(())
+    });
+}
+
+#[test]
+fn dispatch_error_retains_its_thread_safe_source() {
+    use std::error::Error;
+
+    let error = DispatchError::with_source(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "worker pool closed",
+    ));
+    assert_send::<DispatchError>();
+    assert_sync::<DispatchError>();
+    assert_eq!(error.to_string(), "worker pool closed");
+    assert_eq!(error.source().unwrap().to_string(), "worker pool closed");
 }
 
 #[test]

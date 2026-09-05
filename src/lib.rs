@@ -29,7 +29,8 @@ pub use handles::*;
 pub use mode::{Local, Mode, SendMode, UserErrorFor, ValueFor};
 pub use report::{NodeFailure, NodeStatus, RunReport};
 pub use runtime::{
-    CancellationToken, Cancelled, GraphRun, GraphRunner, RunControl, RunInput, RunInputs, RunnerRun,
+    CancellationToken, Cancelled, GraphRun, GraphRunner, NodeDispatcher, NodeJob, RunControl,
+    RunInput, RunInputs, RunnerRun,
 };
 pub use schema::{
     BoundSchema, Cardinality, InputSpec, OutputSpec, Presence, Schema, SchemaBuilder,

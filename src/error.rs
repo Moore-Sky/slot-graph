@@ -30,10 +30,66 @@ pub enum NodeErrorKind {
     InvalidInputs,
     /// The returned output bag does not match the complete Schema.
     InvalidOutputs,
+    /// An external node dispatcher rejected, lost, or panicked while accepting the job.
+    Dispatch,
     /// The task observed a cancellation checkpoint.
     Cancelled,
     /// An invariant inside the library failed.
     InternalInvariantViolation,
+}
+
+/// Failure reported by an application-provided node dispatcher.
+///
+/// A dispatcher returns this only when it cannot accept a Ready node job. The
+/// graph attaches the affected node identity and records a Dispatch node
+/// failure; other independent branches may continue. This error is Send and
+/// Sync so the same adapter can be used by a work-stealing Send executor.
+pub struct DispatchError {
+    message: String,
+    source: Option<Box<dyn Error + Send + Sync + 'static>>,
+}
+
+impl DispatchError {
+    /// Creates a rejection with a human-readable diagnostic and no source.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Retains a thread-safe executor or queue error as the error source.
+    pub fn with_source<E>(source: E) -> Self
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        Self {
+            message: source.to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl fmt::Debug for DispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DispatchError")
+            .field("message", &self.message)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for DispatchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source
+            .as_deref()
+            .map(|source| source as &(dyn Error + 'static))
+    }
 }
 /// Available identity and name context for a structured error.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

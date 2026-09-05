@@ -170,13 +170,77 @@ short sync work inline, poll pending async work, and wake the host, but does not
 spawn or select any particular async runtime or CPU scheduler. Runner reuse is CPU-only and
 one runner has one live run.
 
+### Optional external node dispatch
+
+The default `start`, `execute`, and `runner` APIs are inline, host-driven
+orchestration. Spawning a whole `GraphRun` on a runtime creates one runtime task;
+it does not by itself distribute independent graph nodes across workers.
+
+`start_on`, `execute_on`, and `runner_on` accept a host-provided dispatcher for
+node-level scheduling. The narrow boundary is:
+
+```rust
+pub trait NodeDispatcher<M: Mode> {
+    fn dispatch(&self, job: NodeJob<M>) -> Result<(), DispatchError>;
+}
+```
+
+`NodeJob<SendMode>` is a `Future<Output = ()> + Send + 'static` with a
+`node_id()` tracing accessor. `GraphRun` identifies Ready nodes and dispatches
+each exactly once. A worker invokes/polls the node, validates its complete
+result, publishes an uncommitted completion into private run state, and wakes
+the current `GraphRun` driver. `GraphRun` alone consumes that completion,
+linearizes cancellation/abort against commit, publishes outputs, unlocks
+successors, and builds the final report. Thus dispatch order and completion
+order never change Many binding order or report ordering.
+
+The core owns neither a pool nor an executor. A small adapter for
+`Moore-Sky/async-runtime` has the shape:
+
+```rust,ignore
+impl NodeDispatcher<SendMode> for RuntimeDispatcher {
+    fn dispatch(&self, job: NodeJob<SendMode>) -> Result<(), DispatchError> {
+        self.spawner
+            .spawn(Priority::Normal, job)
+            .map_err(DispatchError::with_source)?
+            .detach();
+        Ok(())
+    }
+}
+```
+
+Its general `Runtime` can run Send jobs on its work-stealing worker pool;
+`LocalDomain` is instead an owner-thread Local scheduler and provides only
+interleaving, not multi-core execution for `Local` jobs. `Local` dispatch may
+therefore target a current-thread driver or `LocalDomain`, while only Send jobs
+belong on a general worker pool. Because `NodeDispatcher` is `'static`, a Local
+adapter owns its scheduler handle; for example it may hold `Rc<LocalDomain>`
+while another `Rc` clone is retained by the owner-thread driver. It cannot
+borrow `&LocalDomain`. [`28_external_dispatch.rs`](../examples/28_external_dispatch.rs)
+shows the same seam using a two-thread standard-library pool, without adding an
+async-runtime dependency.
+
+A dispatch error, dispatcher panic, or accepted job dropped during host-pool
+shutdown is a node failure; unrelated branches continue under the usual failure
+policy. A dispatched job can complete after cancellation, abort, or `GraphRun`
+drop, so its completion carries the run generation and is discarded when stale.
+A reusable runner must not expose prior-run storage to a later generation; it
+may defer reuse and allocate fresh storage while retired jobs drain. Hosts must
+keep their dispatcher alive until live runs reach a terminal state. After
+accepting a job, a dispatcher must eventually poll or drop it. Leaking the job
+is a broken host contract and may leave its `GraphRun` pending indefinitely.
+
 States are Pending, Ready, Running, Succeeded, Failed, Cancelled, Blocked.
 Independent branches continue after failure. Under unwind, task/Future-poll
 panic becomes node failure; `panic = abort` cannot report. Cooperative cancel
 stops new tasks, signals async tasks, and cannot preempt sync work. Tasks may
-check cancellation. Abort drops pending Futures at next poll and returns a
-cancelled report; dropping a run also drops Futures but returns no report.
-Neither rolls back external effects. Retry, fallback, rollback, and durable
+check cancellation. Inline abort drops pending Futures at the next GraphRun poll.
+Dispatched abort wakes each job wrapper; the cancelled report becomes ready only
+after accepted jobs acknowledge a safe terminal/drop boundary. Dropping an
+inline run drops its Futures synchronously. Dropping a dispatched run requests
+abort but cannot synchronously preempt a Future currently being polled on another
+worker; later completions are stale and perform cleanup only. Neither operation
+rolls back external effects. Retry, fallback, rollback, and durable
 checkpoint/recovery are not core features.
 
 ## Automatic connection, errors, and release gate
@@ -340,6 +404,7 @@ The complete numbered examples are the executable form of these usage patterns:
 | Bind typed task input/output keys once | [25_bound_task_io.rs](../examples/25_bound_task_io.rs) |
 | Collect selected producers into one Many input | [26_collect_into.rs](../examples/26_collect_into.rs) |
 | Assemble a seven-node renderer-style pipeline | [27_renderer_pipeline.rs](../examples/27_renderer_pipeline.rs) |
+| Dispatch independent Send nodes through a host pool | [28_external_dispatch.rs](../examples/28_external_dispatch.rs) |
 
 ### A complete frame preparation pipeline
 
@@ -392,7 +457,7 @@ format. The intended kind matrix is:
 | Edit | `DuplicateNodeName`, `InvalidNodeName`, `InvalidSchema`, `UnknownNodeName`, `UnknownSlotName`, `StaleNodeId`, `StaleSlotHandle`, `StaleEdgeId`, `ForeignHandle`, `WrongDirection`, `TypeMismatch`, `CardinalityOverflow`, `ExpectedManyInput`, `DuplicateEdge`, `InputSourceConflict`, `AmbiguousAutoMatch` |
 | Compile | `MissingRequiredInput`, `NoActiveTarget`, `CycleDetected`, `InvalidBinding` |
 | Start | `MissingRunInput`, `DuplicateRunInput`, `UnexpectedRunInput`, `RunInputCardinality`, `RunInputTypeMismatch` |
-| Node | `User`, `Panic`, `InvalidInputs`, `InvalidOutputs`, `Cancelled`, `InternalInvariantViolation` |
+| Node | `User`, `Panic`, `InvalidInputs`, `InvalidOutputs`, `Dispatch`, `Cancelled`, `InternalInvariantViolation` |
 | Report | `NotCollected`, `OutputUnavailable`, `OutputTaken`, `ForeignHandle`, `StaleSlotHandle`, `TypeMismatch` |
 | Execute | `Start`, `Failed`, `Cancelled` |
 

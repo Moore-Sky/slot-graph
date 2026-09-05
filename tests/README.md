@@ -14,6 +14,7 @@ Rust 1.71 but do not demonstrate working graph execution yet.
 | `version_contract.rs` | Immutable snapshots, task/Schema changes, external-key compatibility |
 | `bound_contract.rs` | Task-key layouts, input shape, mixed output writes, replacement conveniences |
 | `collect_contract.rs` | Explicit source scope, one target, ordering, deduplication, atomic rollback |
+| `dispatch_contract.rs` | Node-level overlap, dependency gates, failures, ordering, and stale jobs |
 
 Rustdoc also checks rejected Send values/factories/Futures, Local controls,
 repeatable factories, and exclusive runner borrowing using `compile_fail`.
@@ -36,6 +37,12 @@ separate layout mismatch from shape mismatch and preserve the existing atomic
 output checks when named and keyed writes address the same slot. Performance
 claims additionally need benchmarks; passing these contracts does not establish
 lookup costs, allocation counts, or throughput.
+
+External-dispatch contracts use bounded gates and timeouts for adversarial
+interleavings. They require independent Send nodes to overlap, while keeping
+dependency unlock, cancellation/commit races, Many order, failure reports, and
+runner generations under GraphRun's control. Local dispatch is owner-thread-only
+and has no multi-core guarantee.
 
 This is the initial behavioral matrix, not a coverage percentage or the v0.3
 release gate. Benchmark baselines, platform coverage, and additional adversarial

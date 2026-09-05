@@ -43,12 +43,19 @@ them reaches the unimplemented API until the execution engine is built.
 | [25_bound_task_io.rs](examples/25_bound_task_io.rs) | Resolve typed input/output keys before task execution |
 | [26_collect_into.rs](examples/26_collect_into.rs) | Collect explicit source nodes into one Many input |
 | [27_renderer_pipeline.rs](examples/27_renderer_pipeline.rs) | Combine seven render/UI nodes across two frames |
+| [28_external_dispatch.rs](examples/28_external_dispatch.rs) | Dispatch independent Send nodes through a host-owned pool |
 
 Named task I/O remains convenient; BoundSchema keys provide a separate path
 designed to avoid runtime name/hash lookup. This is not an allocation-free or
 measured performance claim. `collect_into(sources, target_input)` adds ordinary
 edges only to the selected Many input; it does not introduce runtime discovery,
 flatten Vec values, or replace `connect_nodes` and its `auto_collect` flag.
+
+`execute_on(inputs, dispatcher)` is an optional node-level dispatch boundary for
+`SendMode`. It lets a host pool run independent ready nodes concurrently without
+making that pool a core dependency. The default `execute` path remains inline
+and host-driven; spawning only a whole `GraphRun` does not itself create
+node-level parallelism. See [28_external_dispatch.rs](examples/28_external_dispatch.rs).
 
 ## Source layout
 
