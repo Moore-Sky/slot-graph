@@ -983,13 +983,27 @@ impl<M: Mode> Drop for GraphRun<M> {
 impl<M: Mode> GraphRun<M> {
     fn build_inputs(&self, index: usize) -> Result<NodeInputs<M>, NodeError<M>> {
         let node = &self.plan.nodes[index];
-        let mut values = Vec::with_capacity(node.inputs.len());
+        let value_capacity =
+            node.inputs
+                .iter()
+                .enumerate()
+                .fold(0, |total, (input_index, input)| {
+                    total
+                        + if input.external.is_some() {
+                            self.external[index][input_index].len()
+                        } else {
+                            input.sources.len()
+                        }
+                });
+        let mut values = Vec::with_capacity(value_capacity);
+        let mut ranges = Vec::with_capacity(node.inputs.len());
         for (input_index, input) in node.inputs.iter().enumerate() {
+            let start = values.len();
             if input.external.is_some() {
-                values.push(self.external[index][input_index].clone());
+                values.extend(self.external[index][input_index].iter().cloned());
+                ranges.push(start..values.len());
                 continue;
             }
-            let mut resolved = Vec::with_capacity(input.sources.len());
             for source in &input.sources {
                 let value = self.outputs[source.node][source.output]
                     .as_ref()
@@ -997,13 +1011,13 @@ impl<M: Mode> GraphRun<M> {
                         self.node_error(index, NodeErrorKind::InternalInvariantViolation)
                     })?
                     .clone();
-                resolved.push(value);
+                values.push(value);
             }
-            values.push(resolved);
+            ranges.push(start..values.len());
         }
         Ok(NodeInputs::from_resolved(
-            node.schema.layout(),
-            node.schema.schema().inputs.clone(),
+            Arc::clone(&node.input_layout),
+            ranges,
             values,
         ))
     }

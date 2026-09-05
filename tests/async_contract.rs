@@ -15,9 +15,53 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use slot_graph::{outputs, schema, Cancelled, ExecuteError, Graph, Local, RunInputs};
+use slot_graph::{
+    outputs, schema, Cancelled, ExecuteError, Graph, InputSpec, Local, NodeOutputs, OutputSpec,
+    RunInputs, Schema,
+};
 
 const MAX_POLLS: usize = 32;
+
+#[test]
+fn inputs_stay_owned_across_await_for_named_and_bound_reads() {
+    let source_schema = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
+    let source_output = source_schema.output::<u32>("value").unwrap();
+    let sink_schema = Schema::new(
+        vec![InputSpec::required_one::<u32>("value")],
+        vec![OutputSpec::new::<u32>("sum")],
+    )
+    .bind();
+    let input = sink_schema.input::<u32>("value").unwrap();
+    let output = sink_schema.output::<u32>("sum").unwrap();
+
+    let mut graph = Graph::<Local>::new();
+    let source = graph
+        .add_sync("source", source_schema, move |_, _| {
+            let mut outputs = NodeOutputs::new();
+            outputs.insert_key(source_output, 21_u32);
+            Ok(outputs)
+        })
+        .unwrap();
+    let sink = graph
+        .add_async("sink", sink_schema, move |_, inputs| async move {
+            std::future::ready(()).await;
+            let named = inputs.required::<u32>("value")?;
+            let keyed = inputs.required_key(input)?;
+            let mut outputs = NodeOutputs::new();
+            outputs.insert_key(output, *named + *keyed);
+            Ok(outputs)
+        })
+        .unwrap();
+    graph
+        .connect(source.output("value"), sink.input("value"))
+        .unwrap();
+    graph.set_active(sink, true).unwrap();
+    let sum = graph.output::<u32>(sink, "sum").unwrap();
+
+    let report =
+        futures_lite::future::block_on(graph.compile().unwrap().execute(RunInputs::new())).unwrap();
+    assert_eq!(**report.output(sum).unwrap(), 42);
+}
 
 #[derive(Default)]
 struct GateState {

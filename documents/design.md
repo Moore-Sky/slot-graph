@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.4**
+**Version: 0.4.5**
 
-This is the authoritative 0.4.4 design. It defines observable behavior rather
+This is the authoritative 0.4.5 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -151,6 +151,9 @@ deduplicates node dependencies. Hot execution does no name/hash lookup or
 dynamic declaration traversal for scheduling and edge delivery. Successful
 keyed task I/O also avoids name/hash lookup; named task I/O is a convenience
 path that may resolve names during execution. Error diagnostics may use names.
+Since 0.4.5, task input snapshots share their immutable compiled layout and
+store the invocation's resolved values contiguously; this does not change
+named/keyed access results or Many binding order.
 These guarantees do not imply allocation-free execution or measured speed.
 0.4 uses full, not incremental, compilation.
 

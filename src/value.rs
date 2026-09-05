@@ -12,8 +12,9 @@ use crate::{
 };
 use std::{
     any::{Any, TypeId},
+    collections::HashMap,
     marker::PhantomData,
-    ops::Deref,
+    ops::{Deref, Range},
     sync::Arc,
 };
 
@@ -187,23 +188,76 @@ impl<M: Mode> Default for NodeOutputs<M> {
     }
 }
 
+/// Immutable metadata used while a task reads resolved inputs.
+///
+/// This retains only the fields needed on the execution path. Graph editing
+/// continues to use the complete [`InputSpec`]. A compiled node shares one
+/// layout between every run and every asynchronous task invocation.
+pub(crate) struct InputLayout {
+    layout: u64,
+    specs: Box<[InputAccessSpec]>,
+    names: HashMap<String, usize>,
+}
+
+#[derive(Clone, Copy)]
+struct InputAccessSpec {
+    value_type: crate::handles::SlotTypeId,
+    presence: Presence,
+    cardinality: Cardinality,
+}
+
+impl InputLayout {
+    pub(crate) fn new(layout: u64, inputs: &[InputSpec]) -> Self {
+        let mut names = HashMap::with_capacity(inputs.len());
+        let specs = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                names.insert(input.name.clone(), index);
+                InputAccessSpec {
+                    value_type: input.value_type,
+                    presence: input.presence,
+                    cardinality: input.cardinality,
+                }
+            })
+            .collect();
+        Self {
+            layout,
+            specs,
+            names,
+        }
+    }
+
+    fn named_index(&self, name: &str) -> Option<usize> {
+        self.names.get(name).copied()
+    }
+
+    fn spec(&self, index: usize) -> Option<InputAccessSpec> {
+        self.specs.get(index).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.specs.len()
+    }
+}
+
 /// Owned snapshot of resolved task inputs, safe to move across an await point.
 pub struct NodeInputs<M: Mode> {
-    layout: u64,
-    specs: Vec<InputSpec>,
-    values: Vec<Vec<StoredValue>>,
+    layout: Arc<InputLayout>,
+    ranges: Vec<Range<usize>>,
+    values: Vec<StoredValue>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> NodeInputs<M> {
     /// Builds a resolved input snapshot. The runtime has established mode-valid values.
     pub(crate) fn from_resolved(
-        layout: u64,
-        specs: Vec<InputSpec>,
-        values: Vec<Vec<StoredValue>>,
+        layout: Arc<InputLayout>,
+        ranges: Vec<Range<usize>>,
+        values: Vec<StoredValue>,
     ) -> Self {
         Self {
             layout,
-            specs,
+            ranges,
             values,
             _mode: PhantomData,
         }
@@ -212,15 +266,17 @@ impl<M: Mode> NodeInputs<M> {
         NodeError::internal(NodeErrorKind::InvalidInputs, ErrorContext::default())
     }
     fn named_index(&self, name: &str) -> Result<usize, NodeError<M>> {
-        self.specs
-            .iter()
-            .position(|spec| spec.name == name)
-            .ok_or_else(Self::invalid)
+        self.layout.named_index(name).ok_or_else(Self::invalid)
     }
     fn key_index<T: ValueFor<M>>(&self, key: InputKey<T>) -> Result<usize, NodeError<M>> {
-        if key.layout() != self.layout
-            || key.index() >= self.specs.len()
-            || self.specs[key.index()].value_type != crate::handles::SlotTypeId::of::<T>()
+        if key.layout() != self.layout.layout
+            || key.index() >= self.layout.len()
+            || self
+                .layout
+                .spec(key.index())
+                .expect("checked input index")
+                .value_type
+                != crate::handles::SlotTypeId::of::<T>()
         {
             return Err(Self::invalid());
         }
@@ -231,7 +287,7 @@ impl<M: Mode> NodeInputs<M> {
         index: usize,
         required: bool,
     ) -> Result<Option<Shared<T, M>>, NodeError<M>> {
-        let spec = self.specs.get(index).ok_or_else(Self::invalid)?;
+        let spec = self.layout.spec(index).ok_or_else(Self::invalid)?;
         if spec.value_type != crate::handles::SlotTypeId::of::<T>()
             || spec.cardinality != Cardinality::One
             || (required && spec.presence != Presence::Required)
@@ -239,28 +295,33 @@ impl<M: Mode> NodeInputs<M> {
         {
             return Err(Self::invalid());
         }
-        let values = self.values.get(index).ok_or_else(Self::invalid)?;
+        let range = self.ranges.get(index).ok_or_else(Self::invalid)?;
+        let values = self.values.get(range.clone()).ok_or_else(Self::invalid)?;
         if values.len() > 1 {
             return Err(Self::invalid());
         }
-        match values.first().cloned() {
+        match values.first() {
             None => Ok(None),
-            Some(value) => value.into_shared().map(Some).ok_or_else(Self::invalid),
+            Some(value) => value
+                .shared::<T, M>()
+                .cloned()
+                .map(Some)
+                .ok_or_else(Self::invalid),
         }
     }
     fn many_at<T: ValueFor<M>>(&self, index: usize) -> Result<Vec<Shared<T, M>>, NodeError<M>> {
-        let spec = self.specs.get(index).ok_or_else(Self::invalid)?;
+        let spec = self.layout.spec(index).ok_or_else(Self::invalid)?;
         if spec.value_type != crate::handles::SlotTypeId::of::<T>()
             || spec.cardinality != Cardinality::Many
         {
             return Err(Self::invalid());
         }
+        let range = self.ranges.get(index).ok_or_else(Self::invalid)?;
         self.values
-            .get(index)
+            .get(range.clone())
             .ok_or_else(Self::invalid)?
             .iter()
-            .cloned()
-            .map(|value| value.into_shared().ok_or_else(Self::invalid))
+            .map(|value| value.shared::<T, M>().cloned().ok_or_else(Self::invalid))
             .collect()
     }
     /// Reads a Required One input, failing on an invalid name, type, or shape.

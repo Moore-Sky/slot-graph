@@ -1,7 +1,7 @@
 //! Typed dependency graphs for synchronous and asynchronous tasks.
 //!
-//! Version 0.4.4 shares type-erased value storage across graph bindings while
-//! preserving opaque ownership and executor-neutral runtime contracts.
+//! Version 0.4.5 shares compiled task-input layouts and stores each invocation's
+//! resolved values contiguously while preserving the public input API.
 //!
 //! Start with [Graph], declare [Schema] inputs and outputs, compile an
 //! [ExecutionGraphVersion], then drive a [GraphRun] with your host executor.

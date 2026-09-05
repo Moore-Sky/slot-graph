@@ -21,6 +21,7 @@ use crate::{
     runtime::{Dispatcher, GraphRun, GraphRunner, NodeDispatcher, RunInputs},
     schema::{BoundSchema, Cardinality, Presence},
     task::Task,
+    value::InputLayout,
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -45,6 +46,8 @@ pub(crate) struct CompiledNode<M: Mode> {
     pub(crate) name: String,
     pub(crate) schema_generation: u64,
     pub(crate) schema: BoundSchema,
+    /// Execution-only input metadata shared by all invocations of this node.
+    pub(crate) input_layout: Arc<InputLayout>,
     pub(crate) task: Task<M>,
     pub(crate) inputs: Vec<CompiledInput>,
     pub(crate) predecessors: Vec<usize>,
@@ -269,6 +272,10 @@ pub(crate) fn compile_graph<M: Mode>(
             name: node.name.clone(),
             schema_generation: node.schema_generation,
             schema: node.schema.clone(),
+            input_layout: Arc::new(InputLayout::new(
+                node.schema.layout(),
+                &node.schema.schema().inputs,
+            )),
             task: node.task.clone(),
             inputs,
             predecessors: predecessors[dense].clone(),
