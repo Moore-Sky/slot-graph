@@ -36,6 +36,23 @@ pub fn empty_schema() -> Schema {
     Schema::builder().build()
 }
 
+/// Builds independent, active no-op nodes for measuring run orchestration with
+/// no slot values or dependency edges.
+pub fn build_local_active_empty(size: usize) -> Graph<Local> {
+    assert!(size > 0);
+    let mut graph = Graph::<Local>::new();
+    let schema = empty_schema();
+    for index in 0..size {
+        let node = graph
+            .add_sync(format!("node_{index}"), schema.clone(), |_, _| {
+                Ok(NodeOutputs::new())
+            })
+            .unwrap();
+        graph.set_active(node, true).unwrap();
+    }
+    graph
+}
+
 pub fn source_schema() -> Schema {
     Schema::builder()
         .output(OutputSpec::new::<u64>("value"))

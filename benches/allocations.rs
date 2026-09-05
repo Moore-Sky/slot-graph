@@ -367,6 +367,114 @@ fn main() {
          end_live_delta_bytes,iterations"
     );
 
+    // Diagnostic A: independent active no-ops isolate GraphRun lifecycle and
+    // scheduler bookkeeping from slot delivery and task work.
+    let graph = common::build_local_active_empty(100);
+    let version = graph.compile().unwrap();
+    let preflight = block_on(version.execute(RunInputs::new())).unwrap();
+    assert_eq!(preflight.failures().len(), 0);
+    drop(preflight);
+    average("diagnostic_a/active_empty/fresh/100", ITERATIONS, || {
+        let report = block_on(version.execute(RunInputs::new())).unwrap();
+        black_box(report.failures().len());
+        drop(report);
+    });
+    let mut runner = version.runner();
+    average("diagnostic_a/active_empty/reusable/100", ITERATIONS, || {
+        let report = block_on(runner.execute(RunInputs::new())).unwrap();
+        black_box(report.failures().len());
+        drop(report);
+    });
+
+    // Diagnostic B: one hundred scalar deliveries expose the incremental
+    // cost of value wrapping, task input construction, task outputs, and edge
+    // readiness beyond A.
+    let (graph, output) = common::build_local_chain(100, 100, common::IoStyle::Bound);
+    let version = graph.compile().unwrap();
+    let mut preflight = block_on(version.execute(RunInputs::new())).unwrap();
+    assert_eq!(*preflight.take_output(output).unwrap(), 100);
+    drop(preflight);
+    average(
+        "diagnostic_b/scalar_chain/fresh/bound/100",
+        ITERATIONS,
+        || {
+            let mut report = block_on(version.execute(RunInputs::new())).unwrap();
+            black_box(*report.take_output(output).unwrap());
+            drop(report);
+        },
+    );
+    let mut runner = version.runner();
+    average(
+        "diagnostic_b/scalar_chain/reusable/bound/100",
+        ITERATIONS,
+        || {
+            let mut report = block_on(runner.execute(RunInputs::new())).unwrap();
+            black_box(*report.take_output(output).unwrap());
+            drop(report);
+        },
+    );
+
+    // Diagnostic C: the same node count as A/B, but fan-out/fan-in delivers
+    // shared values into Many inputs. It makes the collection and shared-value
+    // cost measurable relative to the scalar chain.
+    let (graph, output) = common::build_local_renderer_frame(10, 10);
+    let version = graph.compile().unwrap();
+    let mut preflight = block_on(version.execute(RunInputs::new())).unwrap();
+    assert_eq!(
+        *preflight.take_output(output).unwrap(),
+        common::renderer_expected(10, 10)
+    );
+    drop(preflight);
+    average(
+        "diagnostic_c/fanout_fanin_many/fresh/bound/100",
+        ITERATIONS,
+        || {
+            let mut report = block_on(version.execute(RunInputs::new())).unwrap();
+            black_box(*report.take_output(output).unwrap());
+            drop(report);
+        },
+    );
+    let mut runner = version.runner();
+    average(
+        "diagnostic_c/fanout_fanin_many/reusable/bound/100",
+        ITERATIONS,
+        || {
+            let mut report = block_on(runner.execute(RunInputs::new())).unwrap();
+            black_box(*report.take_output(output).unwrap());
+            drop(report);
+        },
+    );
+
+    // Diagnostic D: this is the exact independent Ready Send graph used by
+    // the inline and fixed-pool timing comparisons. Keep construction and
+    // preflight outside allocation windows, then wait for worker wrappers
+    // before each window closes.
+    let (graph, output) = common::build_send_independent(100);
+    let version = graph.compile().unwrap();
+    let mut preflight = block_on(version.execute(RunInputs::new())).unwrap();
+    assert_eq!(*preflight.take_output(output).unwrap(), 99);
+    drop(preflight);
+    let mut runner = version.runner();
+    average(
+        "diagnostic_d/independent_ready_send/inline/reusable/100",
+        ITERATIONS,
+        || {
+            let mut report = block_on(runner.execute(RunInputs::new())).unwrap();
+            black_box(*report.take_output(output).unwrap());
+            drop(report);
+        },
+    );
+    for workers in [1_usize, 8] {
+        average_fixed_pool(
+            &format!(
+                "diagnostic_d/independent_ready_send/mutex_mpsc_workers_{workers}/reusable/100"
+            ),
+            workers,
+            true,
+            ITERATIONS,
+        );
+    }
+
     average("graph_build/chain/100", ITERATIONS, || {
         black_box(common::build_local_chain(100, 100, common::IoStyle::Bound));
     });
