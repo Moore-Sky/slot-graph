@@ -9,7 +9,7 @@ the difference.
 
 | Field | Value |
 | --- | --- |
-| Recorded at | 2026-09-05, Asia/Tokyo |
+| Recorded at | 2026-09-05, 21:05-21:48 Asia/Tokyo |
 | Operating system | Windows 11 Home, version 10.0.26200, build 26200, 64-bit |
 | CPU | AMD Ryzen 7 8845H with Radeon 780M Graphics |
 | Physical cores | 8 |
@@ -18,17 +18,19 @@ the difference.
 | Physical memory | 64,163,266,560 bytes (approximately 59.8 GiB) |
 | Cargo target | `x86_64-pc-windows-msvc` |
 | Active power plan before a formal run | Balanced (`381b4222-f694-41f0-9685-ff5bb260df2e`) |
-| Formal-run power plan | `High performance` - record the resolved GUID below |
-| Source revision observed | `0ffa48a0285958dbaec2b030156206e91b59c4d4` |
-| Worktree state observed | `documents/bench-plan.md` was untracked; formal baseline requires a clean revision |
-| Rust toolchain observed | `rustc 1.97.0-nightly (507271bc1 2026-05-17)` |
-| Cargo observed | `cargo 1.97.0-nightly (4d1f98451 2026-05-15)` |
-| LLVM observed | 22.1.4 |
-| MSRV verification toolchain | `1.71.0` (record `rustc -Vv` at execution time) |
+| Formal-run power plan | High performance (`8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c`) |
+| Source revision observed | `f486dbc9bea896ab614bb5cdd53e30441f33d034` |
+| Worktree state observed | Clean at the start of all timing rounds; generated artifacts remained under ignored `target/` |
+| Rust toolchain observed | `rustc 1.98.0 (88d9e12ae 2026-08-18)` |
+| Cargo observed | `cargo 1.98.0 (797e8a9bc 2026-08-05)` |
+| LLVM observed | 22.1.8 |
+| MSRV verification toolchain | `rustc 1.71.0 (8ede3aae2 2023-07-12)`, LLVM 16.0.5; `cargo 1.71.0 (cfd3bbd8f 2023-06-08)` |
+| Power source during observation | AC power reported (`BatteryStatus = 2`); battery charge 96% |
+| Thermal instrumentation | No package-temperature sensor was recorded; no cooling constraint was observed |
 
-The observed nightly toolchain is useful for development, but it is not a
-formal baseline identity. A formal report must contain the exact timing toolchain
-and source revision used for its results.
+All formal timings used the explicit `+stable` toolchain above. The active power
+plan was restored to Balanced after every Criterion round and after the
+allocation probe.
 
 ## Formal-Run Procedure
 
@@ -50,12 +52,12 @@ and source revision used for its results.
 
 ## PowerShell Power-Plan Wrapper
 
-Replace the placeholder with the High Performance GUID resolved on the host.
-The wrapper restores the original plan even when the benchmark command fails.
+This host resolved the High Performance alias to the GUID used below. The
+wrapper restores the original plan even when the benchmark command fails.
 
 ```powershell
 $previousPlan = (powercfg /getactivescheme | Select-String -Pattern '[0-9a-fA-F-]{36}').Matches.Value
-$highPerformancePlan = '<resolved-high-performance-guid>'
+$highPerformancePlan = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'
 try {
     powercfg /setactive $highPerformancePlan
     cargo bench --locked --bench <criterion-target> -- --save-baseline v0.5.0-r1 --warm-up-time 3 --measurement-time 10 --sample-size 100 --confidence-level 0.99 --significance-level 0.01
