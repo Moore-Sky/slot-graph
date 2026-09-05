@@ -57,30 +57,23 @@ impl<T: ValueFor<M>, M: Mode> Shared<T, M> {
 /// Object-safe operations needed after erasing the concrete slot payload.
 trait ErasedShared: Any {
     fn value_type_id(&self) -> TypeId;
-    fn clone_erased(&self) -> Box<dyn ErasedShared>;
     fn as_any(&self) -> &dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
 impl<T: Any, M: Mode> ErasedShared for Shared<T, M> {
     fn value_type_id(&self) -> TypeId {
         TypeId::of::<T>()
     }
-    fn clone_erased(&self) -> Box<dyn ErasedShared> {
-        Box::new(self.clone())
-    }
     fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
 }
 
 /// One type-erased, shared slot value. The erased object retains the actual
 /// `Shared<T, M>` wrapper, so reports can safely borrow it without rebuilding a
-/// typed handle or relying on representation casts.
-pub(crate) struct StoredValue(Box<dyn ErasedShared>);
+/// typed handle or relying on representation casts. Cloning a stored value
+/// shares this wrapper allocation instead of allocating another erased box.
+pub(crate) struct StoredValue(Arc<dyn ErasedShared>);
 
 // `StoredValue` is always enclosed by a mode-parameterized public container.
 // Send-mode construction only accepts `ValueFor<SendMode>`, whose values and
@@ -91,7 +84,7 @@ unsafe impl Send for StoredValue {}
 unsafe impl Sync for StoredValue {}
 impl Clone for StoredValue {
     fn clone(&self) -> Self {
-        Self(self.0.clone_erased())
+        Self(Arc::clone(&self.0))
     }
 }
 impl StoredValue {
@@ -102,17 +95,17 @@ impl StoredValue {
         self.0.as_any().downcast_ref::<Shared<T, M>>()
     }
     pub(crate) fn into_shared<T: Any, M: Mode>(self) -> Option<Shared<T, M>> {
-        self.0
-            .into_any()
-            .downcast::<Shared<T, M>>()
-            .ok()
-            .map(|value| *value)
+        // The erased wrapper itself is reference counted. Cloning the typed
+        // handle before consuming that wrapper transfers one ownership of the
+        // payload without copying T; dropping self removes the wrapper's old
+        // ownership immediately afterwards.
+        self.0.as_any().downcast_ref::<Shared<T, M>>().cloned()
     }
     pub(crate) fn from_value<T: ValueFor<M>, M: Mode>(value: T) -> Self {
-        Self(Box::new(Shared::<T, M>::new(value)))
+        Self(Arc::new(Shared::<T, M>::new(value)))
     }
     pub(crate) fn from_shared<T: ValueFor<M>, M: Mode>(value: Shared<T, M>) -> Self {
-        Self(Box::new(value))
+        Self(Arc::new(value))
     }
 }
 
@@ -320,3 +313,41 @@ unsafe impl<M: SendModeStorage> Send for NodeInputs<M> {}
 unsafe impl<M: SendModeStorage> Sync for NodeInputs<M> {}
 unsafe impl<M: SendModeStorage> Send for NodeOutputs<M> {}
 unsafe impl<M: SendModeStorage> Sync for NodeOutputs<M> {}
+
+#[cfg(test)]
+mod tests {
+    use super::{StoredValue, ValueFor};
+    use crate::Local;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    struct NonCloneProbe(Arc<AtomicUsize>);
+
+    impl Drop for NonCloneProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn stored_value_clone_shares_a_non_clone_payload() {
+        fn value_for_local<T: ValueFor<Local>>() {}
+        value_for_local::<NonCloneProbe>();
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let value =
+            StoredValue::from_value::<NonCloneProbe, Local>(NonCloneProbe(Arc::clone(&drops)));
+        let clone = value.clone();
+
+        let shared = value
+            .into_shared::<NonCloneProbe, Local>()
+            .expect("the original type remains available after cloning");
+        drop(shared);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+        drop(clone);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}

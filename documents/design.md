@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.3**
+**Version: 0.4.4**
 
-This is the authoritative 0.4.3 design. It defines observable behavior rather
+This is the authoritative 0.4.4 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -73,6 +73,8 @@ inputs.many::<T>("input")?;     // Vec<Shared<T, Mode>>
 ownership rather than cloning `T`. Storage, reference count, and address are
 not API. Local may use `Rc<dyn Any>` and Send may use `Arc<dyn Any + Send +
 Sync>`. Values need not implement Clone, Copy, Default, Debug, or Serialize.
+Since 0.4.4, forwarding a stored value to multiple bindings also shares its
+erased backing instead of allocating a new erased wrapper for every clone.
 
 ## Scenarios
 
