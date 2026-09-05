@@ -1,7 +1,7 @@
 //! Typed dependency graphs for synchronous and asynchronous tasks.
 //!
-//! Version 0.5.0 establishes reproducible performance baselines for the
-//! executor-neutral graph, runner, and external-dispatch paths.
+//! Version 0.5.1 adds a measured direct path for synchronous task invocations
+//! while retaining the executor-neutral async and external-dispatch paths.
 //!
 //! Start with [Graph], declare [Schema] inputs and outputs, compile an
 //! [ExecutionGraphVersion], then drive a [GraphRun] with your host executor.

@@ -15,6 +15,18 @@
 - Stop when every measured hotspot and shortlisted strategy has been tested or
   ruled out, with no remaining candidate meeting the acceptance gate.
 
+Use a staged evaluation funnel; do not rerun the complete timing suite for
+every candidate:
+
+1. Run static analysis and the allocation probe first. Reject a candidate that
+   cannot approach an acceptance threshold.
+2. Run three A/B rounds only for the one to three workloads directly affected
+   by the isolated change.
+3. Run the smallest representative sync, async, and dispatch protection set.
+4. Run the full correctness/MSRV gate only for an accepted version. Repeat the
+   complete performance suite only for a new release baseline or when the
+   change has broad enough impact that focused protection is insufficient.
+
 ## Baseline suite
 
 Use these development-only dependencies:

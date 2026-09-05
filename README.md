@@ -2,7 +2,7 @@
 
 Slot Graph is a lightweight, embeddable typed slot graph for dependency-driven synchronous and asynchronous task execution.
 
-Version 0.5.0 provides graph editing, immutable compilation snapshots, inline
+Version 0.5.1 provides graph editing, immutable compilation snapshots, inline
 sync/async execution, cancellation, reusable runners, and optional external
 Ready-node dispatch. The observable contract is described in
 [the design document](documents/design.md).

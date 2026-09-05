@@ -38,7 +38,7 @@ pub type LocalTaskResult = Result<NodeOutputs<Local>, NodeError<Local>>;
 pub type SendTaskResult = Result<NodeOutputs<SendMode>, NodeError<SendMode>>;
 pub(crate) type TaskResult<M> = Result<NodeOutputs<M>, NodeError<M>>;
 
-/// One fresh future returned from a task factory.
+/// One fresh asynchronous future returned from a task factory.
 ///
 /// The erased future keeps the public `Task` representation independent of a
 /// concrete async type. Only the SendMode constructors can create a
@@ -58,7 +58,18 @@ impl<M: Mode> Future for TaskFuture<M> {
     }
 }
 
-type Factory<M> = dyn Fn(TaskContext<M>, NodeInputs<M>) -> TaskFuture<M> + 'static;
+/// One invocation of a task factory.
+///
+/// Synchronous factories return their result directly. This keeps the common
+/// inline path from allocating and polling a `ready` future solely to adapt to
+/// the asynchronous representation. Asynchronous factories retain the erased
+/// future required by the executor-neutral runtime boundary.
+pub(crate) enum TaskInvocation<M: Mode> {
+    Sync(TaskResult<M>),
+    Async(TaskFuture<M>),
+}
+
+type Factory<M> = dyn Fn(TaskContext<M>, NodeInputs<M>) -> TaskInvocation<M> + 'static;
 
 /// An owned, repeatable task factory used by graph registration and replacement.
 pub struct Task<M: Mode> {
@@ -74,8 +85,12 @@ impl<M: Mode> Clone for Task<M> {
     }
 }
 impl<M: Mode> Task<M> {
-    /// Invokes the factory exactly once and returns the invocation's fresh future.
-    pub(crate) fn invoke(&self, context: TaskContext<M>, inputs: NodeInputs<M>) -> TaskFuture<M> {
+    /// Invokes the factory exactly once.
+    pub(crate) fn invoke(
+        &self,
+        context: TaskContext<M>,
+        inputs: NodeInputs<M>,
+    ) -> TaskInvocation<M> {
         (self.factory)(context, inputs)
     }
 }
@@ -87,10 +102,7 @@ impl Task<Local> {
         F: Fn(TaskContext<Local>, NodeInputs<Local>) -> LocalTaskResult + 'static,
     {
         Self {
-            factory: Arc::new(move |context, inputs| TaskFuture {
-                future: Box::pin(std::future::ready(task(context, inputs))),
-                _mode: PhantomData,
-            }),
+            factory: Arc::new(move |context, inputs| TaskInvocation::Sync(task(context, inputs))),
             _mode: PhantomData,
         }
     }
@@ -101,9 +113,11 @@ impl Task<Local> {
         Fut: Future<Output = LocalTaskResult> + 'static,
     {
         Self {
-            factory: Arc::new(move |context, inputs| TaskFuture {
-                future: Box::pin(task(context, inputs)),
-                _mode: PhantomData,
+            factory: Arc::new(move |context, inputs| {
+                TaskInvocation::Async(TaskFuture {
+                    future: Box::pin(task(context, inputs)),
+                    _mode: PhantomData,
+                })
             }),
             _mode: PhantomData,
         }
@@ -119,10 +133,7 @@ impl Task<SendMode> {
             + 'static,
     {
         Self {
-            factory: Arc::new(move |context, inputs| TaskFuture {
-                future: Box::pin(std::future::ready(task(context, inputs))),
-                _mode: PhantomData,
-            }),
+            factory: Arc::new(move |context, inputs| TaskInvocation::Sync(task(context, inputs))),
             _mode: PhantomData,
         }
     }
@@ -133,9 +144,11 @@ impl Task<SendMode> {
         Fut: Future<Output = SendTaskResult> + Send + 'static,
     {
         Self {
-            factory: Arc::new(move |context, inputs| TaskFuture {
-                future: Box::pin(task(context, inputs)),
-                _mode: PhantomData,
+            factory: Arc::new(move |context, inputs| {
+                TaskInvocation::Async(TaskFuture {
+                    future: Box::pin(task(context, inputs)),
+                    _mode: PhantomData,
+                })
             }),
             _mode: PhantomData,
         }
@@ -151,3 +164,4 @@ impl SendModeTask for SendMode {}
 unsafe impl<M: SendModeTask> Send for Task<M> {}
 unsafe impl<M: SendModeTask> Sync for Task<M> {}
 unsafe impl<M: SendModeTask> Send for TaskFuture<M> {}
+unsafe impl<M: SendModeTask> Send for TaskInvocation<M> {}

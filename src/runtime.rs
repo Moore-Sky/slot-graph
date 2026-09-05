@@ -35,7 +35,7 @@ use crate::{
     mode::{Mode, SendMode, ValueFor},
     report::{NodeFailure, NodeStatus, ReportNode, RunReport, TargetOutput},
     schema::Cardinality,
-    task::{Task, TaskContext, TaskFuture, TaskResult},
+    task::{Task, TaskContext, TaskFuture, TaskInvocation, TaskResult},
     value::{NodeInputs, NodeOutputs, OutputAddress, StoredValue},
 };
 use std::{
@@ -220,7 +220,12 @@ impl<M: Mode> Future for NodeJob<M> {
             match catch_unwind(AssertUnwindSafe(|| {
                 task.invoke(TaskContext::new(this.node, token), inputs)
             })) {
-                Ok(future) => this.future = Some(future),
+                Ok(TaskInvocation::Sync(result)) => {
+                    this.completed = true;
+                    this.queue.push(JobEvent::Complete(this.index, result));
+                    return Poll::Ready(());
+                }
+                Ok(TaskInvocation::Async(future)) => this.future = Some(future),
                 Err(_) => {
                     this.completed = true;
                     this.queue.push(JobEvent::Panic(this.index));
@@ -898,7 +903,12 @@ impl<M: Mode> Future for GraphRun<M> {
                             match catch_unwind(AssertUnwindSafe(|| {
                                 task.invoke(TaskContext::new(node, token), inputs)
                             })) {
-                                Ok(future) => this.futures[index] = Some(future),
+                                Ok(TaskInvocation::Sync(result)) => {
+                                    this.complete_inline(index, result);
+                                }
+                                Ok(TaskInvocation::Async(future)) => {
+                                    this.futures[index] = Some(future);
+                                }
                                 Err(_) => {
                                     let error = this.node_error(index, NodeErrorKind::Panic);
                                     this.fail_node(index, error)
@@ -919,30 +929,7 @@ impl<M: Mode> Future for GraphRun<M> {
                     Ok(Poll::Pending) => this.futures[index] = Some(future),
                     Ok(Poll::Ready(result)) => {
                         progressed = true;
-                        match result {
-                            Ok(outputs) => match this.validate_outputs(index, outputs) {
-                                Ok(values) => {
-                                    if this.cancel.cancelled.load(Ordering::Acquire) {
-                                        this.statuses[index] = NodeStatus::Cancelled;
-                                    } else {
-                                        this.commit_node(index, values);
-                                    }
-                                }
-                                Err(error) => this.fail_node(index, error),
-                            },
-                            Err(mut error) => {
-                                if error.context.node.is_none() {
-                                    error.context.node = Some(this.plan.nodes[index].id);
-                                }
-                                if error.kind == NodeErrorKind::Cancelled
-                                    && this.cancel.cancelled.load(Ordering::Acquire)
-                                {
-                                    this.statuses[index] = NodeStatus::Cancelled;
-                                } else {
-                                    this.fail_node(index, error);
-                                }
-                            }
-                        }
+                        this.complete_inline(index, result);
                     }
                     Err(_) => {
                         progressed = true;
@@ -981,6 +968,37 @@ impl<M: Mode> Drop for GraphRun<M> {
 }
 
 impl<M: Mode> GraphRun<M> {
+    /// Applies the result of an inline task after it has completed. Synchronous
+    /// tasks reach this directly; asynchronous tasks reach it after polling.
+    /// Both routes therefore share the same validation, cancellation, and
+    /// atomic-commit boundary.
+    fn complete_inline(&mut self, index: usize, result: TaskResult<M>) {
+        match result {
+            Ok(outputs) => match self.validate_outputs(index, outputs) {
+                Ok(values) => {
+                    if self.cancel.cancelled.load(Ordering::Acquire) {
+                        self.statuses[index] = NodeStatus::Cancelled;
+                    } else {
+                        self.commit_node(index, values);
+                    }
+                }
+                Err(error) => self.fail_node(index, error),
+            },
+            Err(mut error) => {
+                if error.context.node.is_none() {
+                    error.context.node = Some(self.plan.nodes[index].id);
+                }
+                if error.kind == NodeErrorKind::Cancelled
+                    && self.cancel.cancelled.load(Ordering::Acquire)
+                {
+                    self.statuses[index] = NodeStatus::Cancelled;
+                } else {
+                    self.fail_node(index, error);
+                }
+            }
+        }
+    }
+
     fn build_inputs(&self, index: usize) -> Result<NodeInputs<M>, NodeError<M>> {
         let node = &self.plan.nodes[index];
         let value_capacity =

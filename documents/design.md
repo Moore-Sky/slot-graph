@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.5.0**
+**Version: 0.5.1**
 
-This is the authoritative 0.5.0 design. It defines observable behavior rather
+This is the authoritative 0.5.1 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -496,7 +496,7 @@ inactive invalid branches; old/new version overlap; Local `Rc` and `!Send`
 Futures; Send rejection of incompatible values, futures, and factories; manual
 polling; and at least one real test runtime.
 
-0.5.0 is complete only when every listed behavior has an automated test or
+0.5.1 is complete only when every listed behavior has an automated test or
 runnable example, locked Rust 1.71 CI passes, and the reproducible timing and
 allocation baseline in `documents/bench-plan.md` has been recorded.
 Users must be able to declare sync/async graphs naturally; use Optional, Many,
@@ -512,6 +512,15 @@ The package uses edition 2021, requires `std`, and supports Rust 1.71. Commit
 all targets/features, stable tests/doctests/examples, Rust 1.71 tests, and
 rustdoc warnings as errors. Any core, development, example, or benchmark
 dependency change must be resolved and tested on Rust 1.71.
+
+### v0.5.1 implementation note
+
+Version 0.5.1 does not change the public API or observable task contract.
+Internally, synchronous factories return their `TaskResult` directly instead
+of allocating and polling `Box::pin(std::future::ready(...))`. Asynchronous
+factories retain the existing boxed Future path. Inline and dispatched
+synchronous results still use the same panic containment, cancellation check,
+output validation, atomic commit, failure propagation, and dependency gating.
 
 The core dependency list remains empty. `futures-lite` is the minimal dev-only
 host runtime for examples and integration tests; Criterion and `async-runtime`
