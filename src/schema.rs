@@ -3,10 +3,16 @@
 //! Bind an immutable task layout before creating closures that use keyed I/O.
 
 use crate::{
-    error::EditError,
+    error::{EditError, EditErrorKind, ErrorContext},
     handles::{InputKey, OutputKey, SlotId, SlotTypeId},
 };
-use std::any::Any;
+use std::{
+    any::Any,
+    collections::HashSet,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_LAYOUT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// States whether an input needs at least one source to compile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +89,6 @@ pub struct Schema {
 /// it too. Invalid descriptors can never issue a key or enter a runnable node.
 /// This allows ordinary Schema arguments to convert infallibly at the API
 /// boundary while keeping errors on existing fallible operations.
-/// Binding and key lookup remain unimplemented in this revision.
 #[derive(Clone, Debug)]
 pub struct BoundSchema {
     schema: Schema,
@@ -96,19 +101,44 @@ impl BoundSchema {
         &self.schema
     }
 
+    /// Returns the opaque layout identity to task I/O internals.
+    pub(crate) const fn layout(&self) -> u64 {
+        self._layout
+    }
+
     /// Validates the full Schema, then resolves an exact-typed input by name.
     ///
     /// InvalidSchema, UnknownSlotName, and TypeMismatch are edit errors.
     /// The key retains input shape; task access must use the matching Required
-    /// One, Optional One, or Many accessor. Currently unimplemented.
-    pub fn input<T: Any>(&self, _name: &str) -> Result<InputKey<T>, EditError> {
-        unimplemented!()
+    /// One, Optional One, or Many accessor.
+    pub fn input<T: Any>(&self, name: &str) -> Result<InputKey<T>, EditError> {
+        self.schema.validate()?;
+        let index = self
+            .schema
+            .inputs
+            .iter()
+            .position(|input| input.name == name)
+            .ok_or_else(|| unknown_slot(name))?;
+        if self.schema.inputs[index].value_type != SlotTypeId::of::<T>() {
+            return Err(type_mismatch(name));
+        }
+        Ok(InputKey::new(self._layout, index))
     }
 
     /// Validates the full Schema, then resolves an exact-typed output by name.
-    /// Uses the same error categories as [`Self::input`]. Currently unimplemented.
-    pub fn output<T: Any>(&self, _name: &str) -> Result<OutputKey<T>, EditError> {
-        unimplemented!()
+    /// Uses the same error categories as [`Self::input`].
+    pub fn output<T: Any>(&self, name: &str) -> Result<OutputKey<T>, EditError> {
+        self.schema.validate()?;
+        let index = self
+            .schema
+            .outputs
+            .iter()
+            .position(|output| output.name == name)
+            .ok_or_else(|| unknown_slot(name))?;
+        if self.schema.outputs[index].value_type != SlotTypeId::of::<T>() {
+            return Err(type_mismatch(name));
+        }
+        Ok(OutputKey::new(self._layout, index))
     }
 }
 
@@ -183,9 +213,12 @@ impl Schema {
     ///
     /// Resolve keys on the returned layout, capture them in the task, and pass
     /// that layout to add_sync/add_async. Key lookups and graph registration
-    /// validate the complete declaration. This operation remains a stub.
+    /// validate the complete declaration.
     pub fn bind(self) -> BoundSchema {
-        unimplemented!()
+        BoundSchema {
+            schema: self,
+            _layout: NEXT_LAYOUT_ID.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     /// Creates a schema from ordered input and output declarations.
@@ -198,6 +231,71 @@ impl Schema {
     /// Starts incremental construction of an ordered schema.
     pub fn builder() -> SchemaBuilder {
         SchemaBuilder::default()
+    }
+}
+
+impl Schema {
+    /// Validates invariants that are local to one schema declaration.
+    ///
+    /// Graph registration and bound-key lookup both call this method. Keeping
+    /// it crate-visible means a bound snapshot cannot become a bypass around
+    /// the same validation performed for ordinary declarations.
+    pub(crate) fn validate(&self) -> Result<(), EditError> {
+        validate_inputs(&self.inputs)?;
+        validate_outputs(&self.outputs)
+    }
+}
+
+fn validate_inputs(inputs: &[InputSpec]) -> Result<(), EditError> {
+    let mut names = HashSet::with_capacity(inputs.len());
+    let mut ids = HashSet::with_capacity(inputs.len());
+    for input in inputs {
+        if input.name.is_empty()
+            || !names.insert(input.name.as_str())
+            || !ids.insert(input.id)
+            || (input.auto_collect && input.cardinality != Cardinality::Many)
+        {
+            return Err(invalid_schema());
+        }
+    }
+    Ok(())
+}
+
+fn validate_outputs(outputs: &[OutputSpec]) -> Result<(), EditError> {
+    let mut names = HashSet::with_capacity(outputs.len());
+    let mut ids = HashSet::with_capacity(outputs.len());
+    for output in outputs {
+        if output.name.is_empty() || !names.insert(output.name.as_str()) || !ids.insert(output.id) {
+            return Err(invalid_schema());
+        }
+    }
+    Ok(())
+}
+
+fn invalid_schema() -> EditError {
+    EditError {
+        kind: EditErrorKind::InvalidSchema,
+        context: ErrorContext::default(),
+    }
+}
+
+fn unknown_slot(name: &str) -> EditError {
+    EditError {
+        kind: EditErrorKind::UnknownSlotName,
+        context: ErrorContext {
+            name: Some(name.to_owned()),
+            ..ErrorContext::default()
+        },
+    }
+}
+
+fn type_mismatch(name: &str) -> EditError {
+    EditError {
+        kind: EditErrorKind::TypeMismatch,
+        context: ErrorContext {
+            name: Some(name.to_owned()),
+            ..ErrorContext::default()
+        },
     }
 }
 /// Fluent builder for [`Schema`].

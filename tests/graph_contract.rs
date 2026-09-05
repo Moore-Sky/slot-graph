@@ -1,8 +1,6 @@
 //! Public API contract tests for declaration-graph editing and compilation.
 //!
-//! These tests intentionally describe the 0.3 contract before the execution
-//! engine exists.  They are ignored rather than mocked: when enabled, every
-//! assertion exercises only the crate's public API and must pass unchanged.
+//! Every assertion exercises only the crate's public API.
 
 use slot_graph::{
     Cardinality, CompileErrorKind, EditErrorKind, ExecutionGraphVersion, Graph, InputSpec, Local,
@@ -76,7 +74,6 @@ fn assert_edit_kind<T>(result: Result<T, slot_graph::EditError>, expected: EditE
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn build_connect_activate_and_compile_a_simple_graph() {
     let mut graph = Graph::<Local>::new();
     let producer = source(&mut graph, "producer", "value");
@@ -92,7 +89,6 @@ fn build_connect_activate_and_compile_a_simple_graph() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn compile_rejects_a_graph_without_an_active_target() {
     let mut graph = Graph::<Local>::new();
     source(&mut graph, "source", "value");
@@ -101,7 +97,6 @@ fn compile_rejects_a_graph_without_an_active_target() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn selected_closure_ignores_an_inactive_missing_required_branch() {
     let mut graph = Graph::<Local>::new();
     let source_node = source(&mut graph, "source", "value");
@@ -121,7 +116,6 @@ fn selected_closure_ignores_an_inactive_missing_required_branch() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn selected_closure_reports_a_cycle_only_after_that_branch_becomes_active() {
     let mut graph = Graph::<Local>::new();
     let root = source(&mut graph, "root", "root");
@@ -161,7 +155,6 @@ fn selected_closure_reports_a_cycle_only_after_that_branch_becomes_active() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn connect_rejects_handles_from_another_graph() {
     let mut left = Graph::<Local>::new();
     let mut right = Graph::<Local>::new();
@@ -175,7 +168,6 @@ fn connect_rejects_handles_from_another_graph() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn removed_node_and_its_incident_edge_become_stale() {
     let mut graph = Graph::<Local>::new();
     let producer = source(&mut graph, "producer", "value");
@@ -191,7 +183,6 @@ fn removed_node_and_its_incident_edge_become_stale() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn connect_rejects_duplicate_edges_and_one_input_overflow() {
     let mut graph = Graph::<Local>::new();
     let first = source(&mut graph, "first", "value");
@@ -212,7 +203,6 @@ fn connect_rejects_duplicate_edges_and_one_input_overflow() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn reconnect_is_atomic_when_new_source_would_duplicate_an_existing_many_edge() {
     let mut graph = Graph::<Local>::new();
     let first = source(&mut graph, "first", "value");
@@ -236,7 +226,6 @@ fn reconnect_is_atomic_when_new_source_would_duplicate_an_existing_many_edge() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn reconnect_returns_an_edge_that_can_be_used_for_the_replaced_connection() {
     let mut graph = Graph::<Local>::new();
     let first = source(&mut graph, "first", "value");
@@ -251,7 +240,6 @@ fn reconnect_returns_an_edge_that_can_be_used_for_the_replaced_connection() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_connect_prefers_exact_name_over_the_type_only_fallback() {
     let mut graph = Graph::<Local>::new();
     let source_node = graph
@@ -275,7 +263,6 @@ fn auto_connect_prefers_exact_name_over_the_type_only_fallback() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_connect_uses_type_only_fallback_only_when_it_is_unique() {
     let mut graph = Graph::<Local>::new();
     let source_node = source(&mut graph, "source", "different_name");
@@ -287,7 +274,6 @@ fn auto_connect_uses_type_only_fallback_only_when_it_is_unique() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_connect_does_not_use_slot_id_as_a_cross_node_matching_key() {
     let mut graph = Graph::<Local>::new();
     let source_node = graph
@@ -334,7 +320,6 @@ fn auto_connect_does_not_use_slot_id_as_a_cross_node_matching_key() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_connect_is_atomic_when_one_input_is_ambiguous() {
     let mut graph = Graph::<Local>::new();
     let source_node = graph
@@ -375,7 +360,6 @@ fn auto_connect_is_atomic_when_one_input_is_ambiguous() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_collect_many_skips_existing_edges_and_reports_remaining_connections() {
     let mut graph = Graph::<Local>::new();
     let source_node = graph
@@ -417,10 +401,15 @@ fn auto_collect_many_skips_existing_edges_and_reports_remaining_connections() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn auto_connect_reports_unmatched_required_input_and_compile_makes_it_an_error() {
     let mut graph = Graph::<Local>::new();
-    let source_node = source(&mut graph, "source", "text");
+    let source_node = graph
+        .add_sync(
+            "source",
+            Schema::new(vec![], vec![OutputSpec::new::<String>("text")]),
+            empty_task,
+        )
+        .unwrap();
     let target = sink_one(&mut graph, "target", "number");
     let report = graph.connect_nodes(source_node, target).unwrap();
     assert_eq!(report.unmatched_required.len(), 1);
@@ -430,7 +419,6 @@ fn auto_connect_reports_unmatched_required_input_and_compile_makes_it_an_error()
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_preserves_compatible_edge_but_makes_old_slot_handles_stale() {
     let mut graph = Graph::<Local>::new();
     let producer = source(&mut graph, "producer", "value");
@@ -480,7 +468,6 @@ fn replace_schema_preserves_compatible_edge_but_makes_old_slot_handles_stale() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_removes_incompatible_edge_and_makes_its_id_stale() {
     let mut graph = Graph::<Local>::new();
     let producer = source(&mut graph, "producer", "value");
@@ -523,7 +510,6 @@ fn replace_schema_removes_incompatible_edge_and_makes_its_id_stale() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_many_to_one_conflict_fails_without_partially_mutating_the_graph() {
     let mut graph = Graph::<Local>::new();
     let first = source(&mut graph, "first", "value");
@@ -575,7 +561,6 @@ fn replace_schema_many_to_one_conflict_fails_without_partially_mutating_the_grap
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_preserves_an_exposed_input_only_when_its_full_contract_is_unchanged() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -621,7 +606,6 @@ fn replace_schema_preserves_an_exposed_input_only_when_its_full_contract_is_unch
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_reports_an_exposed_input_when_cardinality_changes() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -666,4 +650,44 @@ fn replace_schema_reports_an_exposed_input_when_cardinality_changes() {
         Err(error) => assert_eq!(error.kind, slot_graph::StartErrorKind::UnexpectedRunInput),
         Ok(_) => panic!("new version must reject a removed exposed-input key"),
     }
+}
+
+#[test]
+fn replace_schema_checks_both_ends_of_a_self_loop() {
+    let input_id = SlotId::new(1);
+    let output_id = SlotId::new(2);
+    let mut graph = Graph::<Local>::new();
+    let mut old_input = InputSpec::required_one::<u32>("input");
+    old_input.id = input_id;
+    let mut old_output = OutputSpec::new::<u32>("output");
+    old_output.id = output_id;
+    let node = graph
+        .add_sync(
+            "loop",
+            Schema::new(vec![old_input], vec![old_output]),
+            empty_task,
+        )
+        .unwrap();
+    let edge = graph
+        .connect(node.output("output"), node.input("input"))
+        .unwrap();
+
+    let mut new_input = InputSpec::required_one::<u32>("input");
+    new_input.id = input_id;
+    let mut new_output = OutputSpec::new::<String>("replacement");
+    new_output.id = SlotId::new(3);
+    let report = graph
+        .replace_schema(
+            node,
+            Schema::new(vec![new_input], vec![new_output]),
+            Task::<Local>::sync(empty_task),
+        )
+        .unwrap();
+
+    assert_eq!(report.removed_edges, vec![edge]);
+    graph.set_active(node, true).unwrap();
+    assert!(matches!(
+        graph.compile(),
+        Err(error) if error.kind == CompileErrorKind::MissingRequiredInput
+    ));
 }

@@ -2,8 +2,7 @@
 //!
 //! `collect_into` adds ordinary edges only for the requested `Many` input. It
 //! takes selected sources rather than searching the graph, collects every
-//! exact-type output in caller/source-schema order, and is idempotent. Graph
-//! execution deliberately panics in the current API skeleton. A renderer would
+//! exact-type output in caller/source-schema order, and is idempotent. A renderer would
 //! normally collect semantic values such as `ShadowContribution`, not every
 //! raw texture; this example intentionally models a resource inventory.
 

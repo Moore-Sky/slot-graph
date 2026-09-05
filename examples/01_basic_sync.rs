@@ -1,8 +1,6 @@
 //! Scenario 01: the smallest synchronous data flow.
 //!
-//! `consume` runs only after `produce` has committed its value. The crate is
-//! still an API skeleton: running this example deliberately panics at an
-//! unimplemented runtime entry point, while `cargo test` keeps its API valid.
+//! `consume` runs only after `produce` has committed its value.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -39,5 +37,5 @@ fn basic_sync() {
     graph.set_active(consume, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

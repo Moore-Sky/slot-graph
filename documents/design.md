@@ -1,13 +1,9 @@
 # Slot Graph Design
 
-**Version: 0.3.1**
+**Version: 0.4.0**
 
-This is the authoritative 0.3.1 design. It defines observable behavior rather
+This is the authoritative 0.4.0 design. It defines observable behavior rather
 than a mandated implementation.
-
-The current crate is an API skeleton: examples and contract tests compile, but
-graph editing, compilation, and scheduling remain explicitly unimplemented.
-Ignored behavioral tests are specifications, not evidence of a working engine.
 
 ## Purpose
 
@@ -57,7 +53,7 @@ schema! {
 | `Many<T>` | Required + Many |
 | `Optional<Many<T>>` | Optional + Many |
 
-Outputs are single values in 0.3; fan-out uses several edges, never a Many
+Outputs are single values in 0.4; fan-out uses several edges, never a Many
 output. `schema!` is only convenience: ordinary Schema APIs have equal power,
 and macros never connect, compile, schedule, or execute.
 
@@ -80,8 +76,8 @@ Sync>`. Values need not implement Clone, Copy, Default, Debug, or Serialize.
 
 ## Scenarios
 
-Examples compile against the public skeleton. Until runtime implementation,
-running them deliberately reaches an explicit unimplemented-runtime panic.
+Examples are runnable programs using the public API. They demonstrate the
+observable contracts summarized below.
 
 - [`01_basic_sync.rs`](../examples/01_basic_sync.rs): `produce.value` commits,
   then `consume.value` becomes ready. Ready sync tasks run inline.
@@ -128,7 +124,7 @@ commit wins: publish all outputs, Succeeded
 Later cancellation cannot revoke a committed output. Atomicity protects Slot
 visibility only, never I/O, allocations, GPU recording, or other task effects.
 Connected One/Many inputs wait for all producers; a failed/cancelled/blocked
-producer transitively blocks consumers. This is the sole 0.3 readiness policy.
+producer transitively blocks consumers. This is the sole 0.4 readiness policy.
 
 ## Editing, compile, and versions
 
@@ -154,7 +150,7 @@ dynamic declaration traversal for scheduling and edge delivery. Successful
 keyed task I/O also avoids name/hash lookup; named task I/O is a convenience
 path that may resolve names during execution. Error diagnostics may use names.
 These guarantees do not imply allocation-free execution or measured speed.
-0.3 uses full, not incremental, compilation.
+0.4 uses full, not incremental, compilation.
 
 ## Local, Send, execution, and cancellation
 
@@ -187,11 +183,11 @@ pub trait NodeDispatcher<M: Mode> {
 
 `NodeJob<SendMode>` is a `Future<Output = ()> + Send + 'static` with a
 `node_id()` tracing accessor. `GraphRun` identifies Ready nodes and dispatches
-each exactly once. A worker invokes/polls the node, validates its complete
-result, publishes an uncommitted completion into private run state, and wakes
-the current `GraphRun` driver. `GraphRun` alone consumes that completion,
-linearizes cancellation/abort against commit, publishes outputs, unlocks
-successors, and builds the final report. Thus dispatch order and completion
+each exactly once. A worker invokes/polls the node, publishes its uncommitted
+result into private run state, and wakes the current `GraphRun` driver.
+`GraphRun` alone consumes and validates that completion, linearizes
+cancellation/abort against commit, publishes outputs, unlocks successors, and
+builds the final report. Thus dispatch order and completion
 order never change Many binding order or report ordering.
 
 The core owns neither a pool nor an executor. A small adapter for
@@ -233,8 +229,11 @@ is a broken host contract and may leave its `GraphRun` pending indefinitely.
 States are Pending, Ready, Running, Succeeded, Failed, Cancelled, Blocked.
 Independent branches continue after failure. Under unwind, task/Future-poll
 panic becomes node failure; `panic = abort` cannot report. Cooperative cancel
-stops new tasks, signals async tasks, and cannot preempt sync work. Tasks may
-check cancellation. Inline abort drops pending Futures at the next GraphRun poll.
+prevents unclaimed tasks from starting, signals async tasks, and cannot preempt
+sync work. A task crosses a short internal claim point before its user factory
+is invoked; cancellation is serialized with that claim, so an already claimed
+factory may begin or continue after the request. Tasks may check cancellation.
+Inline abort drops pending Futures at the next GraphRun poll.
 Dispatched abort wakes each job wrapper; the cancelled report becomes ready only
 after accepted jobs acknowledge a safe terminal/drop boundary. Dropping an
 inline run drops its Futures synchronously. Dropping a dispatched run requests
@@ -268,7 +267,7 @@ test it on MSRV. CI covers fmt, clippy all targets/features, stable tests,
 doctests/examples, MSRV tests, and rustdoc warnings. Core has no required async
 runtime/executor dependency.
 
-0.3 excludes lazy/Any/Min/custom readiness, streaming/channels/backpressure,
+0.4 excludes lazy/Any/Min/custom readiness, streaming/channels/backpressure,
 loops/feedback/continuous workflow, incremental compile/rerun/cache, built-in
 scheduler, ECS access analysis, GPU barriers/queues/fences, cross-language type
 identity, serialization, UI/plugins/remote workers/history, and inline/SBO
@@ -276,7 +275,7 @@ values or custom allocators.
 
 ## Resource lifetime and version boundaries
 
-0.3 does **not** implement last-consumer early release. Ordinary Slot values remain until a run is terminal, and their exact drop timing is not contract. A future version may release intermediate values after their last consumer without breaking the public contract. Successful Active target outputs are strongly retained by `RunReport`; retaining a report can extend a transient handle's lifetime. Drop an unneeded report or use `take_output` to transfer the `Shared` value. This never changes renderer fence or pool ownership.
+0.4 does **not** implement last-consumer early release. Ordinary Slot values remain until a run is terminal, and their exact drop timing is not contract. A future version may release intermediate values after their last consumer without breaking the public contract. Successful Active target outputs are strongly retained by `RunReport`; retaining a report can extend a transient handle's lifetime. Drop an unneeded report or use `take_output` to transfer the `Shared` value. This never changes renderer fence or pool ownership.
 
 An exposed input survives `replace_schema` only if Slot identity, exact type, Presence, and Cardinality all remain unchanged. Otherwise it is removed and reported in `SchemaReplaceReport`. Old versions retain their own RunInput keys and output handles after edits; a new version rejects removed keys and stale declaration handles.
 
@@ -465,9 +464,9 @@ User task failures enter the graph through `NodeError::user(source)`. The
 structured NodeError retains the application error as its source while report
 consumers can still inspect node identity and error kind.
 
-Public error kinds and node statuses are non-exhaustive. Version 0.3.x preserves
+Public error kinds and node statuses are non-exhaustive. Version 0.4.x preserves
 Active, ordering, atomic output, and cancellation behavior; incompatible changes
-belong in 0.4. Internal invariant failures belong to node diagnostics rather than
+belong in 0.5. Internal invariant failures belong to node diagnostics rather than
 bypassing the final run report.
 
 ### Required verification and definition of done
@@ -485,8 +484,8 @@ inactive invalid branches; old/new version overlap; Local `Rc` and `!Send`
 Futures; Send rejection of incompatible values, futures, and factories; manual
 polling; and at least one real test runtime.
 
-0.3 is complete only when every listed behavior has an automated test or
-runnable example, benchmark baselines exist, and locked Rust 1.71 CI passes.
+0.4 is complete only when every listed behavior has an automated test or
+runnable example and locked Rust 1.71 CI passes.
 Users must be able to declare sync/async graphs naturally; use Optional, Many,
 fan-out, RunInputs, target outputs, Active selection, edit/version isolation,
 Local/Send boundaries, host-driven Futures, structured reports, atomic

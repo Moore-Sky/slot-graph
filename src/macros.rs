@@ -38,7 +38,7 @@ macro_rules! schema {
 /// with pre-bound output keys when names must be resolved before execution.
 ///
 /// Duplicate, missing, unexpected, or incorrectly typed outputs are validated
-/// together at commit time. Output storage remains unimplemented in this revision.
+/// together at commit time.
 ///
 /// ```no_run
 /// use slot_graph::{outputs, Local, NodeOutputs};

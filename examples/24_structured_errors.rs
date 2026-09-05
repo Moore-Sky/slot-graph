@@ -1,5 +1,4 @@
-//! Handle edit, compile, and startup errors, then execute the corrected graph.
-//! The current API skeleton deliberately panics when graph operations are called.
+//! Scenario 24: handle edit, compile, and startup errors, then execute the corrected graph.
 
 use futures_lite::future::block_on;
 use slot_graph::{

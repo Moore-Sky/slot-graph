@@ -18,9 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let version = graph.compile()?;
     let mut runner = version.runner();
 
-    // `execute` is shorthand for `start + await`. This deliberately drives the
-    // future: an unimplemented runtime must be visible instead of hidden by an
-    // empty `main`.
+    // `execute` is shorthand for `start + await`.
     let report = futures_lite::future::block_on(runner.execute(RunInputs::new()))?;
     println!("frame status: {:?}", report.status(frame));
 

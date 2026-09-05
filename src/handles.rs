@@ -115,6 +115,93 @@ impl SlotTypeId {
     pub fn of<T: Any>() -> Self {
         Self(TypeId::of::<T>())
     }
+
+    pub(crate) fn matches(self, value: TypeId) -> bool {
+        self.0 == value
+    }
+}
+
+impl GraphId {
+    /// Creates a graph identity for internal graph storage.
+    pub(crate) const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl NodeId {
+    /// Creates a node identity for internal graph storage.
+    pub(crate) const fn new(graph: GraphId, raw: u64) -> Self {
+        Self { graph, raw }
+    }
+
+    /// Returns the owning graph identity.
+    pub(crate) const fn graph(self) -> GraphId {
+        self.graph
+    }
+
+    /// Returns the internal generational value.
+    pub(crate) const fn raw(self) -> u64 {
+        self.raw
+    }
+}
+
+impl EdgeId {
+    /// Creates an edge identity for internal graph storage.
+    pub(crate) const fn new(graph: GraphId, raw: u64) -> Self {
+        Self { graph, raw }
+    }
+
+    /// Returns the owning graph identity.
+    pub(crate) const fn graph(self) -> GraphId {
+        self.graph
+    }
+
+    /// Returns the internal generational value.
+    pub(crate) const fn raw(self) -> u64 {
+        self.raw
+    }
+}
+
+impl<T: ?Sized> InputKey<T> {
+    /// Creates a layout-local input key after schema validation.
+    pub(crate) fn new(layout: u64, index: usize) -> Self {
+        Self {
+            layout,
+            index,
+            _type: PhantomData,
+        }
+    }
+
+    /// Returns the opaque layout identity.
+    pub(crate) const fn layout(self) -> u64 {
+        self.layout
+    }
+
+    /// Returns the dense input index.
+    pub(crate) const fn index(self) -> usize {
+        self.index
+    }
+}
+
+impl<T: ?Sized> OutputKey<T> {
+    /// Creates a layout-local output key after schema validation.
+    pub(crate) fn new(layout: u64, index: usize) -> Self {
+        Self {
+            layout,
+            index,
+            _type: PhantomData,
+        }
+    }
+
+    /// Returns the opaque layout identity.
+    pub(crate) const fn layout(self) -> u64 {
+        self.layout
+    }
+
+    /// Returns the dense output index.
+    pub(crate) const fn index(self) -> usize {
+        self.index
+    }
 }
 
 /// A delayed input-slot lookup by node and name.
@@ -242,6 +329,64 @@ impl NodeId {
             name: name.into(),
             slot: None,
             generation: None,
+        }
+    }
+}
+
+impl InputSlotSelector {
+    /// Returns selector data to graph editing internals.
+    pub(crate) fn into_parts(self) -> (NodeId, String, Option<SlotId>, Option<u64>) {
+        (self.node, self.name, self.slot, self.generation)
+    }
+}
+
+impl OutputSlotSelector {
+    /// Returns selector data to graph editing internals.
+    pub(crate) fn into_parts(self) -> (NodeId, String, Option<SlotId>, Option<u64>) {
+        (self.node, self.name, self.slot, self.generation)
+    }
+}
+
+impl<T: ?Sized> InputSlot<T> {
+    /// Creates a validated graph-facing input handle.
+    pub(crate) fn new(node: NodeId, slot: SlotId, generation: u64) -> Self {
+        Self {
+            node,
+            slot,
+            generation,
+            _type: PhantomData,
+        }
+    }
+
+    /// Returns the handle data to graph and runtime internals.
+    pub(crate) const fn parts(self) -> (NodeId, SlotId, u64) {
+        (self.node, self.slot, self.generation)
+    }
+}
+
+impl<T: ?Sized> OutputSlot<T> {
+    /// Creates a validated graph-facing output handle.
+    pub(crate) fn new(node: NodeId, slot: SlotId, generation: u64) -> Self {
+        Self {
+            node,
+            slot,
+            generation,
+            _type: PhantomData,
+        }
+    }
+
+    /// Returns the handle data to graph and report internals.
+    pub(crate) const fn parts(self) -> (NodeId, SlotId, u64) {
+        (self.node, self.slot, self.generation)
+    }
+}
+
+impl NodeSelector {
+    /// Returns the selection representation to graph editing internals.
+    pub(crate) fn into_parts(self) -> Result<NodeId, String> {
+        match self {
+            Self::Id(node) => Ok(node),
+            Self::Name(name) => Err(name),
         }
     }
 }

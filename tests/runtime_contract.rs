@@ -1,9 +1,7 @@
 //! Runtime contracts for the public Slot Graph API.
 //!
-//! These are intentionally ignored until the scheduler/validation engine is
-//! implemented.  They are still compiled on every test run, so they preserve
-//! the intended public API and become executable behaviour tests simply by
-//! removing their `ignore` annotations.
+//! These tests verify scheduling, validation, cancellation, reporting, and
+//! runner reuse through the public API.
 
 use std::{
     cell::Cell,
@@ -31,7 +29,6 @@ fn noop_waker() -> Waker {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn required_run_input_fails_before_any_task_starts() {
     let started = Rc::new(Cell::new(0));
     let mut graph = Graph::<Local>::new();
@@ -58,7 +55,6 @@ fn required_run_input_fails_before_any_task_starts() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn optional_run_input_may_be_absent() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -82,7 +78,6 @@ fn optional_run_input_may_be_absent() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn many_run_input_preserves_extend_order() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -107,7 +102,6 @@ fn many_run_input_preserves_extend_order() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn foreign_run_input_is_rejected_at_start() {
     let mut first = Graph::<Local>::new();
     let first_node = first
@@ -144,7 +138,6 @@ fn foreign_run_input_is_rejected_at_start() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn missing_declared_output_fails_without_a_partial_commit() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -167,7 +160,6 @@ fn missing_declared_output_fails_without_a_partial_commit() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn unknown_declared_output_fails_without_a_partial_commit() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -188,7 +180,6 @@ fn unknown_declared_output_fails_without_a_partial_commit() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn report_keeps_successful_active_target_output() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -209,7 +200,6 @@ fn report_keeps_successful_active_target_output() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn take_output_transfers_only_the_requested_target_value() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -236,7 +226,6 @@ fn take_output_transfers_only_the_requested_target_value() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn failure_blocks_only_its_downstream_and_keeps_independent_work() {
     let mut graph = Graph::<Local>::new();
     let failed = graph
@@ -279,7 +268,6 @@ fn failure_blocks_only_its_downstream_and_keeps_independent_work() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn independent_failures_are_all_retained_in_the_report() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -306,7 +294,6 @@ fn independent_failures_are_all_retained_in_the_report() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn cancellation_before_first_poll_starts_no_task() {
     let started = Arc::new(AtomicUsize::new(0));
     let mut graph = Graph::<Local>::new();
@@ -333,7 +320,6 @@ fn cancellation_before_first_poll_starts_no_task() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn abort_drops_pending_future_and_returns_cancelled_report() {
     let dropped = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(AtomicUsize::new(0));
@@ -385,7 +371,6 @@ fn abort_drops_pending_future_and_returns_cancelled_report() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn runner_reuses_storage_across_completed_runs() {
     let calls = Rc::new(Cell::new(0));
     let mut graph = Graph::<Local>::new();
@@ -406,7 +391,6 @@ fn runner_reuses_storage_across_completed_runs() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn runner_run_exposes_control_and_is_reusable_after_abort() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -438,7 +422,6 @@ fn runner_run_exposes_control_and_is_reusable_after_abort() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn active_target_output_survives_an_independent_failure() {
     let mut graph = Graph::<Local>::new();
     let good = graph
@@ -466,7 +449,6 @@ fn active_target_output_survives_an_independent_failure() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn pending_async_node_does_not_unlock_its_successor_when_manually_polled() {
     let successor_started = Rc::new(Cell::new(0));
     let mut graph = Graph::<Local>::new();
@@ -504,7 +486,6 @@ fn pending_async_node_does_not_unlock_its_successor_when_manually_polled() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn commit_before_cancel_keeps_the_already_committed_target_output() {
     let mut graph = Graph::<Local>::new();
     let complete = graph

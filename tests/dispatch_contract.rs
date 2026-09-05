@@ -1,8 +1,8 @@
 //! Contracts for dispatching ready nodes through an external scheduler.
 //!
 //! A dispatcher is deliberately a scheduling boundary, not a second graph
-//! runtime.  Every test in this file is ignored until the execution engine is
-//! implemented, but remains type-checked as an executable specification.
+//! runtime. These tests verify orchestration and independently scheduled Ready
+//! nodes together.
 
 use std::{
     collections::VecDeque,
@@ -68,7 +68,6 @@ fn send_signal(tx: &Arc<Mutex<Sender<()>>>) {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn independent_send_nodes_are_submitted_as_distinct_overlapping_jobs() {
     let (started_tx, started_rx) = mpsc::channel();
     let started_tx = Arc::new(Mutex::new(started_tx));
@@ -107,7 +106,6 @@ fn independent_send_nodes_are_submitted_as_distinct_overlapping_jobs() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn dependent_node_is_not_submitted_before_its_upstream_output_commits() {
     let (source_started_tx, source_started_rx) = mpsc::channel();
     let source_started_tx = Arc::new(Mutex::new(source_started_tx));
@@ -146,7 +144,6 @@ fn dependent_node_is_not_submitted_before_its_upstream_output_commits() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_node_with_multiple_ready_edges_is_dispatched_once() {
     let invocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut graph = Graph::<SendMode>::new();
@@ -190,7 +187,6 @@ fn a_node_with_multiple_ready_edges_is_dispatched_once() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn many_inputs_keep_edge_order_when_producers_complete_out_of_order() {
     let (first_release_tx, first_release_rx) = mpsc::channel();
     let first_release_rx = Arc::new(Mutex::new(first_release_rx));
@@ -247,7 +243,6 @@ fn many_inputs_keep_edge_order_when_producers_complete_out_of_order() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn dispatch_rejection_fails_only_that_node_and_independent_work_can_finish() {
     #[derive(Clone)]
     struct RejectOne {
@@ -306,6 +301,16 @@ fn dispatch_rejection_fails_only_that_node_and_independent_work_can_finish() {
             assert!(report.failures().any(|failure| {
                 failure.node == rejected && failure.error.kind == NodeErrorKind::Dispatch
             }));
+            let failure = report
+                .failures()
+                .find(|failure| failure.node == rejected)
+                .unwrap();
+            assert_eq!(
+                std::error::Error::source(&failure.error)
+                    .unwrap()
+                    .to_string(),
+                "pool is shutting down"
+            );
             assert!(!dispatcher.submitted().contains(&downstream));
         }
         _ => panic!("a dispatcher rejection is a structured node failure"),
@@ -313,7 +318,6 @@ fn dispatch_rejection_fails_only_that_node_and_independent_work_can_finish() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn cancellation_wins_before_a_dispatched_result_can_commit() {
     let (started_tx, started_rx) = mpsc::channel();
     let started_tx = Arc::new(Mutex::new(started_tx));
@@ -357,7 +361,42 @@ fn cancellation_wins_before_a_dispatched_result_can_commit() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
+fn cancellation_does_not_hide_invalid_dispatched_outputs() {
+    let mut graph = Graph::<SendMode>::new();
+    let node = graph
+        .add_sync("invalid", schema! { () -> ("value": u32) }, |_, _| {
+            Ok(outputs! {})
+        })
+        .unwrap();
+    graph.set_active(node, true).unwrap();
+    let dispatcher = HoldingDispatcher::default();
+    let run = graph
+        .compile()
+        .unwrap()
+        .start_on(RunInputs::new(), dispatcher.clone())
+        .unwrap();
+    let control = run.control();
+    let mut run = Box::pin(run);
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+
+    assert!(matches!(run.as_mut().poll(&mut context), Poll::Pending));
+    let job = dispatcher.pop();
+    block_on(job);
+    control.cancel();
+
+    match block_on(run) {
+        Err(ExecuteError::Cancelled(report)) => {
+            assert_eq!(report.status(node), Some(NodeStatus::Failed));
+            assert!(report.failures().any(|failure| {
+                failure.node == node && failure.error.kind == NodeErrorKind::InvalidOutputs
+            }));
+        }
+        _ => panic!("output validation must happen before the cancellation decision"),
+    }
+}
+
+#[test]
 fn abort_waits_for_an_accepted_queued_job_to_acknowledge_drop() {
     let invocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let called = Arc::clone(&invocations);
@@ -396,7 +435,43 @@ fn abort_waits_for_an_accepted_queued_job_to_acknowledge_drop() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
+fn cooperative_cancel_prevents_a_queued_job_from_invoking_its_factory() {
+    let invocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let called = Arc::clone(&invocations);
+    let mut graph = Graph::<SendMode>::new();
+    let node = graph
+        .add_sync("queued", schema! { () -> () }, move |_, _| {
+            called.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(outputs! {})
+        })
+        .unwrap();
+    graph.set_active(node, true).unwrap();
+    let dispatcher = HoldingDispatcher::default();
+    let run = graph
+        .compile()
+        .unwrap()
+        .start_on(RunInputs::new(), dispatcher.clone())
+        .unwrap();
+    let control = run.control();
+    let mut run = Box::pin(run);
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+
+    assert!(matches!(run.as_mut().poll(&mut context), Poll::Pending));
+    let queued = dispatcher.pop();
+    control.cancel();
+    block_on(queued);
+
+    match block_on(run) {
+        Err(ExecuteError::Cancelled(report)) => {
+            assert_eq!(report.status(node), Some(NodeStatus::Cancelled));
+        }
+        _ => panic!("cancelled queued work must acknowledge without starting"),
+    }
+    assert_eq!(invocations.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
 fn externally_dispatched_commit_before_cancel_keeps_target_output() {
     let mut graph = Graph::<SendMode>::new();
     let producer = graph
@@ -442,8 +517,8 @@ fn externally_dispatched_commit_before_cancel_keeps_target_output() {
     }
 }
 
+#[cfg(panic = "unwind")]
 #[test]
-#[ignore = "implementation pending"]
 fn user_panic_is_a_node_panic_not_a_dispatch_failure() {
     let mut graph = Graph::<SendMode>::new();
     let node = graph
@@ -473,7 +548,6 @@ fn user_panic_is_a_node_panic_not_a_dispatch_failure() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn an_accepted_but_dropped_job_becomes_a_dispatch_failure() {
     #[derive(Clone, Copy)]
     struct DropAccepted;
@@ -514,8 +588,8 @@ fn an_accepted_but_dropped_job_becomes_a_dispatch_failure() {
     }
 }
 
+#[cfg(panic = "unwind")]
 #[test]
-#[ignore = "implementation pending"]
 fn a_dispatcher_panic_is_contained_as_a_dispatch_failure() {
     let mut graph = Graph::<SendMode>::new();
     let node = graph
@@ -574,7 +648,6 @@ impl Wake for NoopWake {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_late_job_from_a_dropped_runner_run_cannot_modify_reused_storage() {
     let invocations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let called = Arc::clone(&invocations);

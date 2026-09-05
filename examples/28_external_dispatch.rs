@@ -3,8 +3,7 @@
 //! Three independent producers are explicitly collected into one `Many` input.
 //! `ExecutionGraphVersion::execute_on` leaves graph readiness and output commit
 //! with `GraphRun`, while this tiny host adapter schedules ready `NodeJob`s on
-//! two worker threads. The public API is currently a skeleton, so running this
-//! example deliberately reaches an unimplemented operation.
+//! two worker threads.
 
 use futures_lite::future::block_on;
 use slot_graph::{

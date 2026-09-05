@@ -1,5 +1,4 @@
-//! Rename a Slot while preserving its identity, edge, and old compiled version.
-//! Graph operations intentionally panic in the current API skeleton.
+//! Scenario 17: rename a Slot while preserving its identity, edge, and old compiled version.
 use futures_lite::future::block_on;
 use slot_graph::{
     outputs, schema, EditErrorKind, Graph, InputSpec, Local, OutputSpec, RunInputs, Schema, SlotId,

@@ -1,8 +1,7 @@
 # Contract tests
 
-This crate is currently an API skeleton. The ignored tests are executable
-specifications with real calls and assertions; they are compiled on stable and
-Rust 1.71 but do not demonstrate working graph execution yet.
+These integration tests are executable contracts with real public API calls
+and assertions. They run on stable and Rust 1.71.
 
 | File | Main contracts |
 | --- | --- |
@@ -19,18 +18,14 @@ Rust 1.71 but do not demonstrate working graph execution yet.
 Rustdoc also checks rejected Send values/factories/Futures, Local controls,
 repeatable factories, and exclusive runner borrowing using `compile_fail`.
 
-Once an implementation satisfies a contract, remove that test's ignore marker.
 Controlled asynchronous tests use bounded poll loops for intermediate states;
 completion is driven only after the test releases a gate or requests abort.
 No test should depend on the completion order of independent nodes.
 
-Activate contracts in implementation-sized vertical slices: graph edits and
-compile, synchronous execution and atomic outputs, async polling and wakes,
-then cancellation, runner reuse, and version/layout interactions. A feature is
-not implemented merely because its ignored tests compile. Its contracts must
-run in default CI before the feature is claimed complete. Do not remove ignore
-markers before the corresponding engine behavior exists; the complete v0.3
-release gate must not leave claimed behavior covered only by ignored tests.
+Contracts are organized in vertical slices: graph edits and compilation,
+synchronous execution and atomic outputs, async polling and wakes,
+cancellation, runner reuse, and version/layout interactions. All contracts run
+in default CI.
 
 Collection tests verify values and order, not just edge counts. Bound-key tests
 separate layout mismatch from shape mismatch and preserve the existing atomic
@@ -44,6 +39,6 @@ dependency unlock, cancellation/commit races, Many order, failure reports, and
 runner generations under GraphRun's control. Local dispatch is owner-thread-only
 and has no multi-core guarantee.
 
-This is the initial behavioral matrix, not a coverage percentage or the v0.3
-release gate. Benchmark baselines, platform coverage, and additional adversarial
-interleavings remain part of implementation and release work.
+This behavioral matrix is not a coverage percentage. Benchmark baselines,
+platform coverage, and additional adversarial interleavings remain ongoing
+engineering work.

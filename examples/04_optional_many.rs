@@ -1,7 +1,7 @@
 //! Scenario 04: Optional and Many are independent dimensions.
 //!
 //! `metadata` may have no source. `items` is Required + Many, so it waits for
-//! every connected producer. The current skeleton deliberately panics when run.
+//! every connected producer.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -56,5 +56,5 @@ fn optional_and_many() {
     graph.set_active(merge, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

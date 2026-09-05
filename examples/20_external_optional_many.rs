@@ -1,5 +1,4 @@
-//! Supply an ordered external collection and an optional label per request.
-//! Graph operations intentionally panic in the current API skeleton.
+//! Scenario 20: supply an ordered external collection and an optional label per request.
 use futures_lite::future::block_on;
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 

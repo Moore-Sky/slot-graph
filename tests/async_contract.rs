@@ -1,7 +1,7 @@
 //! Async runtime contracts for the public Slot Graph API.
 //!
-//! Every test is ignored until the scheduler exists.  Pending paths are driven
-//! with a bounded hand-written poll loop; no test awaits an unresponsive future.
+//! Pending paths are driven with a bounded hand-written poll loop; no test
+//! awaits an unresponsive future.
 
 use std::{
     cell::RefCell,
@@ -139,7 +139,6 @@ fn poll_until_pending<F: Future>(
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn multiple_pending_gates_progress_independently() {
     let first_gate = Gate::default();
     let second_gate = Gate::default();
@@ -198,7 +197,6 @@ fn multiple_pending_gates_progress_independently() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn duplicate_and_stale_wakes_do_not_execute_a_node_twice() {
     let gate = Gate::default();
     let sink_calls = Rc::new(RefCell::new(0_usize));
@@ -252,7 +250,6 @@ fn duplicate_and_stale_wakes_do_not_execute_a_node_twice() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn async_factory_creates_a_fresh_future_for_every_run() {
     let factories = Rc::new(RefCell::new(0_usize));
     let mut graph = Graph::<Local>::new();
@@ -272,7 +269,6 @@ fn async_factory_creates_a_fresh_future_for_every_run() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn cancelling_one_of_two_runs_does_not_affect_the_other() {
     let gate = Gate::default();
     let factories = Rc::new(RefCell::new(0_usize));
@@ -318,7 +314,6 @@ fn cancelling_one_of_two_runs_does_not_affect_the_other() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn dropping_a_pending_run_drops_its_future_once() {
     let gate = Gate::default();
     let mut graph = Graph::<Local>::new();
@@ -343,7 +338,6 @@ fn dropping_a_pending_run_drops_its_future_once() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn runner_is_reusable_after_dropping_a_pending_run() {
     let gate = Gate::default();
     let factories = Rc::new(RefCell::new(0_usize));
@@ -382,7 +376,6 @@ fn runner_is_reusable_after_dropping_a_pending_run() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn cooperative_cancel_of_an_unresponsive_future_remains_pending() {
     let gate = Gate::default();
     let mut graph = Graph::<Local>::new();
@@ -417,7 +410,6 @@ fn cooperative_cancel_of_an_unresponsive_future_remains_pending() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn aborting_a_started_pending_future_drops_it_once_and_finishes() {
     let gate = Gate::default();
     let mut graph = Graph::<Local>::new();

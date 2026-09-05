@@ -16,6 +16,7 @@ pub struct NodeError<M: Mode> {
     /// Graph/slot context associated with the failure.
     pub context: Box<ErrorContext>,
     source: Option<M::UserError>,
+    dispatch_source: Option<DispatchError>,
     _mode: PhantomData<M>,
 }
 /// Categories of task failures; new variants may be added in compatible releases.
@@ -119,6 +120,11 @@ macro_rules! error_type {
             /// Relevant identities and name for diagnostics.
             pub context: ErrorContext
         }
+        impl $name {
+            pub(crate) fn new(kind: $kind, context: ErrorContext) -> Self {
+                Self { kind, context }
+            }
+        }
         impl fmt::Display for $name { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{:?}", self.kind) } }
         impl Error for $name {}
     };
@@ -220,7 +226,11 @@ impl<M: Mode> fmt::Display for NodeError<M> {
 }
 impl<M: Mode> Error for NodeError<M> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.source.as_ref().map(M::user_error_ref)
+        self.source.as_ref().map(M::user_error_ref).or_else(|| {
+            self.dispatch_source
+                .as_ref()
+                .map(|error| error as &dyn Error)
+        })
     }
 }
 #[derive(Debug)]
@@ -232,6 +242,26 @@ impl fmt::Display for MessageError {
 }
 impl Error for MessageError {}
 impl<M: Mode> NodeError<M> {
+    pub(crate) fn internal(kind: NodeErrorKind, context: ErrorContext) -> Self {
+        Self {
+            kind,
+            context: Box::new(context),
+            source: None,
+            dispatch_source: None,
+            _mode: PhantomData,
+        }
+    }
+
+    pub(crate) fn dispatch(source: DispatchError, context: ErrorContext) -> Self {
+        Self {
+            kind: NodeErrorKind::Dispatch,
+            context: Box::new(context),
+            source: None,
+            dispatch_source: Some(source),
+            _mode: PhantomData,
+        }
+    }
+
     /// Retains an application failure without erasing its Error::source chain.
     /// The source must meet the selected mode's thread-safety requirements.
     pub fn user<E: UserErrorFor<M>>(source: E) -> Self {
@@ -239,6 +269,7 @@ impl<M: Mode> NodeError<M> {
             kind: NodeErrorKind::User,
             context: Box::default(),
             source: Some(source.into_user_error()),
+            dispatch_source: None,
             _mode: PhantomData,
         }
     }

@@ -1,8 +1,7 @@
 //! Output commit, report retention, and run-isolation contracts.
 //!
-//! The scheduler is not implemented yet, so these tests remain ignored while
-//! still compiling against the public API. Remove an ignore marker only when
-//! the corresponding behavior is implemented end to end.
+//! These tests verify atomic output commit, typed report access, and retained
+//! resource ownership through the public API.
 
 use std::{
     cell::Cell,
@@ -20,7 +19,6 @@ use slot_graph::{
 };
 
 #[test]
-#[ignore = "implementation pending"]
 fn duplicate_outputs_fail_atomically_and_block_the_consumer() {
     let mut graph = Graph::<Local>::new();
     let producer = graph
@@ -62,7 +60,6 @@ fn duplicate_outputs_fail_atomically_and_block_the_consumer() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn wrongly_typed_output_fails_atomically_and_blocks_the_consumer() {
     let mut graph = Graph::<Local>::new();
     let producer = graph
@@ -100,7 +97,6 @@ fn wrongly_typed_output_fails_atomically_and_blocks_the_consumer() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn complete_multi_output_producer_executes_once_for_one_node_pair() {
     let calls = Rc::new(Cell::new(0));
     let mut graph = Graph::<Local>::new();
@@ -145,7 +141,6 @@ fn complete_multi_output_producer_executes_once_for_one_node_pair() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn report_distinguishes_non_target_foreign_and_stale_outputs() {
     let mut graph = Graph::<Local>::new();
     let selected = graph
@@ -203,7 +198,6 @@ fn report_distinguishes_non_target_foreign_and_stale_outputs() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn failed_target_output_is_unavailable_in_the_failure_report() {
     let mut graph = Graph::<Local>::new();
     let failed = graph
@@ -234,7 +228,6 @@ fn failed_target_output_is_unavailable_in_the_failure_report() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn report_strongly_retains_output_until_taken_value_is_dropped() {
     struct Probe(Arc<AtomicUsize>);
     impl Drop for Probe {
@@ -273,7 +266,6 @@ fn report_strongly_retains_output_until_taken_value_is_dropped() {
 
 #[cfg(panic = "unwind")]
 #[test]
-#[ignore = "implementation pending"]
 fn panic_becomes_node_failure_while_independent_target_completes() {
     let mut graph = Graph::<Local>::new();
     let panic_node = graph
@@ -311,7 +303,6 @@ fn panic_becomes_node_failure_while_independent_target_completes() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn many_fanin_uses_connection_order_in_the_real_output() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -364,7 +355,6 @@ fn many_fanin_uses_connection_order_in_the_real_output() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn repeated_runs_of_one_version_keep_output_values_isolated() {
     let next = Arc::new(AtomicUsize::new(0));
     let mut graph = Graph::<Local>::new();

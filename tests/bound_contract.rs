@@ -1,8 +1,7 @@
 //! Contract tests for pre-bound Schema layouts and typed task keys.
 //!
-//! The runtime remains an API skeleton, so these executable specifications are
-//! ignored. They deliberately use only public APIs and become normal tests as
-//! each part of the implementation is completed.
+//! These executable specifications use only public APIs and verify both bound
+//! schema lookup and execution-time keyed access.
 
 use futures_lite::future::block_on;
 use slot_graph::{
@@ -36,7 +35,6 @@ fn assert_failed_with(
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn bound_lookup_reports_unknown_names_wrong_types_and_invalid_shape() {
     let mut editable = Schema::new(
         vec![InputSpec::required_one::<u32>("count")],
@@ -68,7 +66,6 @@ fn bound_lookup_reports_unknown_names_wrong_types_and_invalid_shape() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn invalid_bound_schema_is_rejected_by_registration_and_atomic_replacement() {
     let invalid = Schema::new(
         vec![],
@@ -121,7 +118,6 @@ fn invalid_bound_schema_is_rejected_by_registration_and_atomic_replacement() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn bound_keys_read_required_optional_and_many_inputs() {
     let producer_schema = Schema::new(
         vec![],
@@ -185,7 +181,6 @@ fn bound_keys_read_required_optional_and_many_inputs() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn named_and_keyed_duplicate_outputs_fail_as_one_atomic_commit() {
     for keyed_first in [false, true] {
         let schema = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
@@ -238,7 +233,6 @@ fn named_and_keyed_duplicate_outputs_fail_as_one_atomic_commit() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_key_from_another_bound_layout_is_an_invalid_input() {
     let expected = Schema::new(vec![InputSpec::optional_one::<u32>("value")], vec![]).bind();
     let foreign = Schema::new(vec![InputSpec::optional_one::<u32>("value")], vec![]).bind();
@@ -261,7 +255,6 @@ fn a_key_from_another_bound_layout_is_an_invalid_input() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_key_with_the_right_layout_but_wrong_accessor_shape_is_an_invalid_input() {
     let schema = Schema::new(vec![InputSpec::optional_one::<u32>("value")], vec![]).bind();
     let value = schema.input::<u32>("value").unwrap();
@@ -284,7 +277,6 @@ fn a_key_with_the_right_layout_but_wrong_accessor_shape_is_an_invalid_input() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_key_from_another_bound_layout_is_an_invalid_output_without_consumers() {
     let registered = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
     let foreign = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
@@ -307,7 +299,6 @@ fn a_key_from_another_bound_layout_is_an_invalid_output_without_consumers() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn a_cloned_bound_schema_deliberately_shares_its_key_layout() {
     let source_schema = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
     let source_value = source_schema.output::<u32>("value").unwrap();
@@ -356,7 +347,6 @@ fn a_cloned_bound_schema_deliberately_shares_its_key_layout() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn keyed_shared_values_forward_a_non_clone_payload_without_rewrapping_it() {
     let source_schema =
         Schema::new(vec![], vec![OutputSpec::new::<NonClonePayload>("payload")]).bind();
@@ -397,7 +387,6 @@ fn keyed_shared_values_forward_a_non_clone_payload_without_rewrapping_it() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn rebound_or_reordered_schema_rejects_an_old_key() {
     let original = Schema::new(
         vec![InputSpec::required_one::<u32>("first")],
@@ -448,7 +437,6 @@ fn rebound_or_reordered_schema_rejects_an_old_key() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn old_versions_keep_their_layout_while_replace_schema_uses_a_new_one() {
     let old_schema = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
     let old_value = old_schema.output::<u32>("value").unwrap();
@@ -487,7 +475,6 @@ fn old_versions_keep_their_layout_while_replace_schema_uses_a_new_one() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replacing_with_a_bound_schema_clone_keeps_keys_compatible_but_slot_handles_stale() {
     let bound = Schema::new(
         vec![InputSpec::optional_one::<u32>("input")],
@@ -526,7 +513,6 @@ fn replacing_with_a_bound_schema_clone_keeps_keys_compatible_but_slot_handles_st
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_sync_and_replace_async_preserve_the_existing_bound_schema() {
     let bound = Schema::new(vec![], vec![OutputSpec::new::<u32>("value")]).bind();
     let value = bound.output::<u32>("value").unwrap();

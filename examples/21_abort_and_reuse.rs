@@ -1,5 +1,4 @@
-//! Abort a pending frame and reuse the same runner for the next frame.
-//! The current API skeleton deliberately panics when graph operations are called.
+//! Scenario 21: abort a pending frame and reuse the same runner for the next frame.
 
 use futures_lite::future::block_on;
 use slot_graph::{outputs, schema, ExecuteError, Graph, Local, RunInputs};

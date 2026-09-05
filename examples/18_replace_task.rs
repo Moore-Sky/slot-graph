@@ -1,5 +1,4 @@
-//! Replace a node factory without changing its Schema, edges, or old versions.
-//! Graph operations intentionally panic in the current API skeleton.
+//! Scenario 18: replace a node factory without changing its Schema, edges, or old versions.
 use futures_lite::future::block_on;
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 

@@ -1,7 +1,7 @@
 //! Contracts for explicit collection into a single `Many` input.
 //!
-//! These are intentionally ignored until graph editing is implemented.  They
-//! use only public APIs so they become executable acceptance tests unchanged.
+//! These contracts use only public APIs and lock the transactional behavior of
+//! the bulk-connect convenience.
 
 use futures_lite::future::block_on;
 use slot_graph::{
@@ -37,7 +37,6 @@ fn assert_edit_kind<T>(result: Result<T, slot_graph::EditError>, expected: EditE
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_collects_all_exact_type_outputs_in_caller_then_schema_order() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -103,7 +102,6 @@ fn collect_into_collects_all_exact_type_outputs_in_caller_then_schema_order() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_preserves_existing_bindings_and_repeated_sources_add_nothing() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -153,7 +151,6 @@ fn collect_into_preserves_existing_bindings_and_repeated_sources_add_nothing() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_only_targets_the_requested_many_input() {
     let mut graph = Graph::<Local>::new();
     let source = source_with_outputs(&mut graph, "source", vec![OutputSpec::new::<u32>("value")]);
@@ -181,7 +178,6 @@ fn collect_into_only_targets_the_requested_many_input() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn no_matches_leave_required_unsatisfied_but_allow_optional_many() {
     let mut required_graph = Graph::<Local>::new();
     let text = source_with_outputs(
@@ -220,7 +216,6 @@ fn no_matches_leave_required_unsatisfied_but_allow_optional_many() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_rejects_a_one_input_even_when_there_is_one_source() {
     let mut graph = Graph::<Local>::new();
     let source = source_with_outputs(&mut graph, "source", vec![OutputSpec::new::<u32>("value")]);
@@ -240,7 +235,6 @@ fn collect_into_rejects_a_one_input_even_when_there_is_one_source() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_validates_every_source_and_rolls_back_on_a_late_foreign_node() {
     let mut graph = Graph::<Local>::new();
     let local = source_with_outputs(&mut graph, "local", vec![OutputSpec::new::<u32>("value")]);
@@ -264,7 +258,6 @@ fn collect_into_validates_every_source_and_rolls_back_on_a_late_foreign_node() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_rejects_an_exposed_target_even_for_an_empty_source_list() {
     let mut graph = Graph::<Local>::new();
     let sink = many_sink(&mut graph, "sink", Presence::Optional);
@@ -278,7 +271,6 @@ fn collect_into_rejects_an_exposed_target_even_for_an_empty_source_list() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn collect_into_rejects_stale_sources_and_stale_targets_without_partial_edits() {
     let mut graph = Graph::<Local>::new();
     let valid = source_with_outputs(&mut graph, "valid", vec![OutputSpec::new::<u32>("value")]);

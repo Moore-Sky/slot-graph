@@ -1,5 +1,4 @@
-//! Forward the same non-Clone value through two consumers using insert_shared.
-//! The current API skeleton deliberately panics when graph operations are called.
+//! Scenario 23: forward the same non-Clone value through two consumers using insert_shared.
 
 use futures_lite::future::block_on;
 use slot_graph::{outputs, schema, Graph, Local, NodeOutputs, RunInputs};

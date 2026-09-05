@@ -1,8 +1,7 @@
 //! Typed dependency graphs for synchronous and asynchronous tasks.
 //!
-//! This v0.3.1 revision defines the public API and its contract tests. Graph
-//! editing, compilation, and execution deliberately use `unimplemented!()`.
-//! Schema descriptors and the Shared ownership wrapper are usable.
+//! Version 0.4.0 implements graph editing, compilation, and execution while
+//! remaining executor-neutral. Its public behavior is covered by contract tests.
 //!
 //! Start with [Graph], declare [Schema] inputs and outputs, compile an
 //! [ExecutionGraphVersion], then drive a [GraphRun] with your host executor.

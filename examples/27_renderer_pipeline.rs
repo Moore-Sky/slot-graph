@@ -7,8 +7,6 @@
 //! Completing the graph does not mean GPU work has finished; allocation,
 //! submission, fences, and resource retirement remain the renderer's job.
 //!
-//! The public API is currently a skeleton, so this example documents the
-//! intended call shape and panics if run today.
 
 use futures_lite::future::block_on;
 use slot_graph::{Graph, InputSpec, Local, NodeOutputs, OutputSpec, RunInputs, Schema};

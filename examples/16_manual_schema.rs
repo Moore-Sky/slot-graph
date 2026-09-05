@@ -1,5 +1,4 @@
-//! Explicit Slot identities, a Schema builder, and Many auto-collection.
-//! Graph operations intentionally panic in the current API skeleton.
+//! Scenario 16: explicit Slot identities, a Schema builder, and Many auto-collection.
 use futures_lite::future::block_on;
 use slot_graph::{outputs, schema, Graph, InputSpec, Local, OutputSpec, RunInputs, Schema, SlotId};
 

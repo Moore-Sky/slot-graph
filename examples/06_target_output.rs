@@ -2,8 +2,7 @@
 //!
 //! A typed output handle is acquired from the declaration graph before
 //! compilation. The report owns the successful target value until the report is dropped
-//! or the value is moved out with `take_output`. The current skeleton deliberately panics
-//! when run.
+//! or the value is moved out with `take_output`.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 

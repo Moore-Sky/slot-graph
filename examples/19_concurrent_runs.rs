@@ -1,5 +1,4 @@
-//! Drive two isolated input snapshots through one immutable version concurrently.
-//! Graph operations intentionally panic in the current API skeleton.
+//! Scenario 19: drive two isolated input snapshots through one immutable version concurrently.
 use futures_lite::future::{block_on, yield_now, zip};
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 

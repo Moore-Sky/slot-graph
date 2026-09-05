@@ -1,8 +1,7 @@
 //! Scenario 05: a graph exposes an input that is supplied per run.
 //!
 //! The exposed `scene` source is validated before any task starts. It is not a
-//! second scheduler or an ordinary producer edge. The current skeleton
-//! deliberately panics when run.
+//! second scheduler or an ordinary producer edge.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -37,5 +36,5 @@ fn supply_run_input() {
     inputs
         .insert(scene_input, Scene { object_count: 17 })
         .unwrap();
-    let _ = futures_lite::future::block_on(version.execute(inputs));
+    futures_lite::future::block_on(version.execute(inputs)).unwrap();
 }

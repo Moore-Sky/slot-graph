@@ -1,8 +1,7 @@
 //! Immutable-version and schema-replacement public API contracts.
 //!
-//! The engine is intentionally not implemented yet, so every scenario is
-//! ignored. The tests still compile against public APIs and become executable
-//! integration tests without rewriting their assertions.
+//! These tests verify immutable compiled versions across declaration graph
+//! edits and repeated execution.
 
 use std::any::Any;
 
@@ -65,7 +64,6 @@ fn assert_start_unexpected(
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn reconnect_creates_a_new_version_without_changing_v1_outputs() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -108,7 +106,6 @@ fn reconnect_creates_a_new_version_without_changing_v1_outputs() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn schema_rename_and_reorder_preserve_edge_ids_and_many_connection_order() {
     let mut graph = Graph::<Local>::new();
     let first = graph
@@ -198,7 +195,6 @@ fn schema_rename_and_reorder_preserve_edge_ids_and_many_connection_order() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn cardinality_replacements_keep_zero_or_one_edge_and_preserve_one_to_many() {
     let mut zero_graph = Graph::<Local>::new();
     let zero = zero_graph
@@ -328,7 +324,6 @@ fn cardinality_replacements_keep_zero_or_one_edge_and_preserve_one_to_many() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn presence_and_auto_collect_changes_only_affect_future_compile_and_connect() {
     let mut graph = Graph::<Local>::new();
     let source = graph
@@ -386,7 +381,6 @@ fn presence_and_auto_collect_changes_only_affect_future_compile_and_connect() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_identity_change_removes_new_version_input_but_keeps_v1_key() {
     let mut graph = Graph::<Local>::new();
     let node = graph
@@ -438,7 +432,6 @@ fn replace_schema_identity_change_removes_new_version_input_but_keeps_v1_key() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_type_and_cardinality_changes_remove_new_version_input_keys() {
     let mut type_graph = Graph::<Local>::new();
     let type_node = type_graph
@@ -542,7 +535,6 @@ fn replace_schema_type_and_cardinality_changes_remove_new_version_input_keys() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_schema_presence_change_removes_the_binding_and_keeps_v1_usable() {
     let mut graph = Graph::<Local>::new();
     let source = graph
@@ -609,7 +601,6 @@ fn replace_schema_presence_change_removes_the_binding_and_keeps_v1_usable() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn replace_task_keeps_schema_and_edges_while_old_version_keeps_old_factory() {
     let mut graph = Graph::<Local>::new();
     let source = graph
@@ -654,7 +645,6 @@ fn replace_task_keeps_schema_and_edges_while_old_version_keeps_old_factory() {
 }
 
 #[test]
-#[ignore = "implementation pending"]
 fn failed_compile_never_invalidates_a_previously_compiled_version() {
     let mut graph = Graph::<Local>::new();
     let source = graph

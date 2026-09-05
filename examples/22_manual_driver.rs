@@ -1,5 +1,4 @@
-//! Drive a graph using a host-owned poll loop and standard-library Waker.
-//! The current API skeleton deliberately panics when graph operations are called.
+//! Scenario 22: drive a graph using a host-owned poll loop and standard-library Waker.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 use std::{

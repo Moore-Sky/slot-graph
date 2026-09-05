@@ -2,7 +2,6 @@
 //!
 //! low and high are alternate endpoints. When only high is active, an
 //! incomplete low branch does not participate in this version's compilation.
-//! The current skeleton deliberately panics when run.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -46,5 +45,5 @@ fn select_high_quality_pipeline() {
     graph.set_active(high, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

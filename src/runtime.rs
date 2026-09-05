@@ -1,5 +1,5 @@
 //! Per-run inputs, Future driving, optional Ready-node dispatch, cancellation,
-//! and reusable runners. All runtime operations remain unimplemented.
+//! and reusable runners.
 //!
 //! ```compile_fail
 //! use slot_graph::{Graph, Local, RunInputs};
@@ -26,18 +26,62 @@
 //! ```
 
 use crate::{
-    error::{DispatchError, ExecuteError, NodeError, StartError},
-    handles::{InputSlot, NodeId},
-    mode::{Mode, ValueFor},
-    report::RunReport,
+    compiled::CompiledPlan,
+    error::{
+        DispatchError, ErrorContext, ExecuteError, NodeError, NodeErrorKind, StartError,
+        StartErrorKind,
+    },
+    handles::{InputSlot, NodeId, RunId, SlotId},
+    mode::{Mode, SendMode, ValueFor},
+    report::{NodeFailure, NodeStatus, ReportNode, RunReport, TargetOutput},
+    schema::Cardinality,
+    task::{Task, TaskContext, TaskFuture, TaskResult},
+    value::{NodeInputs, NodeOutputs, OutputAddress, StoredValue},
 };
 use std::{
     cell::Cell,
+    collections::VecDeque,
     future::Future,
     marker::{PhantomData, PhantomPinned},
+    panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
 };
+
+static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+struct CancelState {
+    cancelled: AtomicBool,
+    aborted: AtomicBool,
+    start_gate: Mutex<()>,
+    waiters: Mutex<Vec<std::task::Waker>>,
+    driver: Mutex<Option<std::task::Waker>>,
+}
+
+impl CancelState {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            aborted: AtomicBool::new(false),
+            start_gate: Mutex::new(()),
+            waiters: Mutex::new(Vec::new()),
+            driver: Mutex::new(None),
+        }
+    }
+
+    fn wake_all(&self) {
+        if let Some(waker) = self.driver.lock().unwrap().take() {
+            waker.wake();
+        }
+        for waker in self.waiters.lock().unwrap().drain(..) {
+            waker.wake();
+        }
+    }
+}
 
 /// One Ready node invocation that an external dispatcher may schedule.
 ///
@@ -51,16 +95,46 @@ use std::{
 /// the originating GraphRun through private shared state. The job never commits
 /// outputs or unlocks successors itself. Dropping an accepted job is observable
 /// as a Dispatch node failure unless the run has already cancelled that
-/// invocation. The runtime storage remains unimplemented in this revision.
+/// invocation.
 #[must_use = "a node job must be scheduled or explicitly rejected"]
 pub struct NodeJob<M: Mode> {
     node: NodeId,
+    index: usize,
+    task: Option<Task<M>>,
+    inputs: Option<NodeInputs<M>>,
+    future: Option<TaskFuture<M>>,
+    queue: Arc<JobQueue<M>>,
+    cancel: Arc<CancelState>,
+    completed: bool,
     _mode: PhantomData<M>,
     _not_sync: PhantomData<Cell<()>>,
     _pinned: PhantomPinned,
 }
 
 impl<M: Mode> NodeJob<M> {
+    fn new(
+        node: NodeId,
+        index: usize,
+        task: Task<M>,
+        inputs: NodeInputs<M>,
+        queue: Arc<JobQueue<M>>,
+        cancel: Arc<CancelState>,
+    ) -> Self {
+        Self {
+            node,
+            index,
+            task: Some(task),
+            inputs: Some(inputs),
+            future: None,
+            queue,
+            cancel,
+            completed: false,
+            _mode: PhantomData,
+            _not_sync: PhantomData,
+            _pinned: PhantomPinned,
+        }
+    }
+
     /// Returns the declaration node identity, for diagnostics or priority mapping.
     pub fn node_id(&self) -> NodeId {
         self.node
@@ -70,10 +144,152 @@ impl<M: Mode> NodeJob<M> {
 impl<M: Mode> Future for NodeJob<M> {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unimplemented!()
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // No field is structurally pinned; PhantomPinned only prevents callers
+        // from moving the job after an executor has pinned it.
+        let this = unsafe { self.get_unchecked_mut() };
+        if this.completed {
+            return Poll::Ready(());
+        }
+        if this.queue.retired.load(Ordering::Acquire) {
+            this.future = None;
+            this.task = None;
+            this.inputs = None;
+            this.completed = true;
+            return Poll::Ready(());
+        }
+        if this.cancel.aborted.load(Ordering::Acquire) {
+            this.future = None;
+            this.task = None;
+            this.inputs = None;
+            this.completed = true;
+            this.queue.push(JobEvent::Cancelled(this.index));
+            return Poll::Ready(());
+        }
+        if this.future.is_none() {
+            let (task, inputs) = {
+                let _start = this.cancel.start_gate.lock().unwrap();
+                if this.queue.retired.load(Ordering::Acquire)
+                    || this.cancel.cancelled.load(Ordering::Acquire)
+                {
+                    this.task = None;
+                    this.inputs = None;
+                    this.completed = true;
+                    this.queue.push(JobEvent::Cancelled(this.index));
+                    return Poll::Ready(());
+                }
+                (
+                    this.task.take().expect("node job factory exists"),
+                    this.inputs.take().expect("node job inputs exist"),
+                )
+            };
+            let token = CancellationToken {
+                state: Arc::clone(&this.cancel),
+                _mode: PhantomData,
+            };
+            match catch_unwind(AssertUnwindSafe(|| {
+                task.invoke(TaskContext::new(this.node, token), inputs)
+            })) {
+                Ok(future) => this.future = Some(future),
+                Err(_) => {
+                    this.completed = true;
+                    this.queue.push(JobEvent::Panic(this.index));
+                    return Poll::Ready(());
+                }
+            }
+        }
+        let future = this.future.as_mut().expect("node job future exists");
+        match catch_unwind(AssertUnwindSafe(|| Pin::new(future).poll(cx))) {
+            Ok(Poll::Pending) => {
+                let mut waiters = this.cancel.waiters.lock().unwrap();
+                if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
+                    waiters.push(cx.waker().clone());
+                }
+                Poll::Pending
+            }
+            Ok(Poll::Ready(result)) => {
+                this.future = None;
+                this.completed = true;
+                this.queue.push(JobEvent::Complete(this.index, result));
+                Poll::Ready(())
+            }
+            Err(_) => {
+                this.future = None;
+                this.completed = true;
+                this.queue.push(JobEvent::Panic(this.index));
+                Poll::Ready(())
+            }
+        }
     }
 }
+
+impl<M: Mode> Drop for NodeJob<M> {
+    fn drop(&mut self) {
+        if !self.completed && !self.queue.retired.load(Ordering::Acquire) {
+            self.completed = true;
+            self.queue.push(JobEvent::Dropped(self.index));
+        }
+    }
+}
+
+enum JobEvent<M: Mode> {
+    Complete(usize, TaskResult<M>),
+    Panic(usize),
+    Dropped(usize),
+    Cancelled(usize),
+}
+
+struct JobQueue<M: Mode> {
+    events: Mutex<VecDeque<JobEvent<M>>>,
+    driver: Mutex<Option<std::task::Waker>>,
+    retired: AtomicBool,
+}
+
+impl<M: Mode> JobQueue<M> {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(VecDeque::new()),
+            driver: Mutex::new(None),
+            retired: AtomicBool::new(false),
+        }
+    }
+
+    fn push(&self, event: JobEvent<M>) {
+        self.events.lock().unwrap().push_back(event);
+        if let Some(waker) = self.driver.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+}
+
+pub(crate) struct Dispatcher<M: Mode> {
+    inner: Arc<dyn NodeDispatcher<M>>,
+}
+
+impl<M: Mode> Clone for Dispatcher<M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<M: Mode> Dispatcher<M> {
+    pub(crate) fn new<D: NodeDispatcher<M>>(dispatcher: D) -> Self {
+        Self {
+            inner: Arc::new(dispatcher),
+        }
+    }
+}
+
+trait SendDispatcherMode: Mode + Send + Sync {}
+impl SendDispatcherMode for SendMode {}
+
+// SendMode constructors accept only Send + Sync dispatchers. Type erasure
+// removes those auto-traits from the object type, so this private marker
+// restores exactly the invariant established at construction.
+unsafe impl<M: SendDispatcherMode> Send for Dispatcher<M> {}
+unsafe impl<M: SendDispatcherMode> Sync for Dispatcher<M> {}
 
 /// Executor-neutral boundary for scheduling individual Ready nodes.
 ///
@@ -104,35 +320,61 @@ where
 
 /// Cooperative cancellation state copied into every task context.
 pub struct CancellationToken<M: Mode> {
+    state: Arc<CancelState>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> Clone for CancellationToken<M> {
     fn clone(&self) -> Self {
-        Self { _mode: PhantomData }
+        Self {
+            state: Arc::clone(&self.state),
+            _mode: PhantomData,
+        }
     }
 }
 impl<M: Mode> CancellationToken<M> {
-    /// Returns whether cancellation has been requested; currently a stub.
+    /// Returns whether cancellation has been requested.
     pub fn is_cancelled(&self) -> bool {
-        unimplemented!()
+        self.state.cancelled.load(Ordering::Acquire)
     }
-    /// Fails when cancelled; currently a stub.
+    /// Fails when cancelled.
     pub fn checkpoint(&self) -> Result<(), NodeError<M>> {
-        unimplemented!()
+        if self.is_cancelled() {
+            Err(NodeError::internal(
+                NodeErrorKind::Cancelled,
+                ErrorContext::default(),
+            ))
+        } else {
+            Ok(())
+        }
     }
-    /// Returns a future resolved by cancellation; currently a stub.
+    /// Returns a future resolved by cancellation.
     pub fn cancelled(&self) -> Cancelled<M> {
-        unimplemented!()
+        Cancelled {
+            state: Arc::clone(&self.state),
+            _mode: PhantomData,
+        }
     }
 }
 /// Future returned by [`CancellationToken::cancelled`].
 pub struct Cancelled<M: Mode> {
+    state: Arc<CancelState>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> Future for Cancelled<M> {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        unimplemented!()
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.state.cancelled.load(Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+        let mut waiters = self.state.waiters.lock().unwrap();
+        if !waiters.iter().any(|waker| waker.will_wake(cx.waker())) {
+            waiters.push(cx.waker().clone());
+        }
+        if self.state.cancelled.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 /// Typed identity of an input exposed at run start.
@@ -149,32 +391,96 @@ impl<T: ?Sized, M: Mode> Clone for RunInput<T, M> {
         *self
     }
 }
+impl<T: ?Sized, M: Mode> RunInput<T, M> {
+    pub(crate) fn new(input: InputSlot<T>, binding_generation: u64) -> Self {
+        Self {
+            _input: input,
+            _binding_generation: binding_generation,
+            _type: PhantomData,
+            _mode: PhantomData,
+        }
+    }
+
+    pub(crate) fn parts(self) -> (InputSlot<T>, u64) {
+        (self._input, self._binding_generation)
+    }
+}
 /// Values supplied for exposed inputs of one run.
 pub struct RunInputs<M: Mode> {
+    entries: Vec<RunInputEntry>,
     _mode: PhantomData<M>,
 }
+struct RunInputEntry {
+    node: NodeId,
+    slot: SlotId,
+    binding: u64,
+    shape: SuppliedShape,
+    values: Vec<StoredValue>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SuppliedShape {
+    One,
+    Many,
+}
 impl<M: Mode> RunInputs<M> {
-    /// Creates an empty input bag; currently a stub.
+    /// Creates an empty input bag.
     pub fn new() -> Self {
-        unimplemented!()
+        Self {
+            entries: Vec::new(),
+            _mode: PhantomData,
+        }
     }
 }
 impl<M: Mode> RunInputs<M> {
-    /// Supplies one owned external value satisfying this mode. Currently a stub.
+    /// Supplies one owned external value satisfying this mode.
     pub fn insert<T: ValueFor<M>>(
         &mut self,
-        _input: RunInput<T, M>,
-        _value: T,
+        input: RunInput<T, M>,
+        value: T,
     ) -> Result<(), StartError> {
-        unimplemented!()
+        let (input, binding) = input.parts();
+        let (node, slot, _) = input.parts();
+        self.push_entry(RunInputEntry {
+            node,
+            slot,
+            binding,
+            shape: SuppliedShape::One,
+            values: vec![StoredValue::from_value::<T, M>(value)],
+        })
     }
-    /// Supplies an ordered collection for a Many input. Currently a stub.
+    /// Supplies an ordered collection for a Many input.
     pub fn extend<T: ValueFor<M>, I: IntoIterator<Item = T>>(
         &mut self,
-        _input: RunInput<T, M>,
-        _values: I,
+        input: RunInput<T, M>,
+        values: I,
     ) -> Result<(), StartError> {
-        unimplemented!()
+        let (input, binding) = input.parts();
+        let (node, slot, _) = input.parts();
+        self.push_entry(RunInputEntry {
+            node,
+            slot,
+            binding,
+            shape: SuppliedShape::Many,
+            values: values
+                .into_iter()
+                .map(StoredValue::from_value::<T, M>)
+                .collect(),
+        })
+    }
+
+    fn push_entry(&mut self, entry: RunInputEntry) -> Result<(), StartError> {
+        if self
+            .entries
+            .iter()
+            .any(|existing| existing.binding == entry.binding)
+        {
+            return Err(start_error(
+                StartErrorKind::DuplicateRunInput,
+                Some(entry.node),
+            ));
+        }
+        self.entries.push(entry);
+        Ok(())
     }
 }
 impl<M: Mode> Default for RunInputs<M> {
@@ -188,37 +494,687 @@ impl<M: Mode> Default for RunInputs<M> {
 /// dispatcher remain the sole DAG orchestrator: they submit jobs, consume
 /// completion notifications, atomically commit outputs, and unlock successors.
 pub struct GraphRun<M: Mode> {
+    plan: Arc<CompiledPlan<M>>,
+    run_id: RunId,
+    cancel: Arc<CancelState>,
+    statuses: Vec<NodeStatus>,
+    remaining: Vec<usize>,
+    outputs: Vec<Vec<Option<StoredValue>>>,
+    external: Vec<Vec<Vec<StoredValue>>>,
+    futures: Vec<Option<TaskFuture<M>>>,
+    ready: VecDeque<usize>,
+    failures: Vec<Option<NodeError<M>>>,
+    blocked_by: Vec<Option<NodeId>>,
+    dispatcher: Option<Dispatcher<M>>,
+    job_queue: Arc<JobQueue<M>>,
+    initialized: bool,
+    start_error: Option<StartError>,
+    finished: bool,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> GraphRun<M> {
-    /// Returns a cloneable external cancellation control; currently a stub.
+    pub(crate) fn start_inline(
+        plan: Arc<CompiledPlan<M>>,
+        inputs: RunInputs<M>,
+    ) -> Result<Self, StartError> {
+        let external = validate_run_inputs(&plan, inputs)?;
+        Ok(Self::new(plan, external, None, None))
+    }
+
+    pub(crate) fn execute_inline(plan: Arc<CompiledPlan<M>>, inputs: RunInputs<M>) -> Self {
+        match validate_run_inputs(&plan, inputs) {
+            Ok(external) => Self::new(plan, external, None, None),
+            Err(error) => {
+                let empty = empty_external(&plan);
+                Self::new(plan, empty, Some(error), None)
+            }
+        }
+    }
+
+    fn new(
+        plan: Arc<CompiledPlan<M>>,
+        external: Vec<Vec<Vec<StoredValue>>>,
+        start_error: Option<StartError>,
+        dispatcher: Option<Dispatcher<M>>,
+    ) -> Self {
+        let node_count = plan.nodes.len();
+        let outputs = plan
+            .nodes
+            .iter()
+            .map(|node| {
+                std::iter::repeat_with(|| None)
+                    .take(node.schema.schema().outputs.len())
+                    .collect()
+            })
+            .collect();
+        Self {
+            run_id: RunId(NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)),
+            cancel: Arc::new(CancelState::new()),
+            statuses: vec![NodeStatus::Pending; node_count],
+            remaining: plan
+                .nodes
+                .iter()
+                .map(|node| node.predecessors.len())
+                .collect(),
+            outputs,
+            external,
+            futures: std::iter::repeat_with(|| None).take(node_count).collect(),
+            ready: VecDeque::new(),
+            failures: std::iter::repeat_with(|| None).take(node_count).collect(),
+            blocked_by: vec![None; node_count],
+            dispatcher,
+            job_queue: Arc::new(JobQueue::new()),
+            initialized: false,
+            start_error,
+            finished: false,
+            plan,
+            _mode: PhantomData,
+        }
+    }
+
+    pub(crate) fn start_dispatched(
+        plan: Arc<CompiledPlan<M>>,
+        inputs: RunInputs<M>,
+        dispatcher: Dispatcher<M>,
+    ) -> Result<Self, StartError> {
+        let external = validate_run_inputs(&plan, inputs)?;
+        Ok(Self::new(plan, external, None, Some(dispatcher)))
+    }
+
+    pub(crate) fn execute_dispatched(
+        plan: Arc<CompiledPlan<M>>,
+        inputs: RunInputs<M>,
+        dispatcher: Dispatcher<M>,
+    ) -> Self {
+        match validate_run_inputs(&plan, inputs) {
+            Ok(external) => Self::new(plan, external, None, Some(dispatcher)),
+            Err(error) => {
+                let empty = empty_external(&plan);
+                Self::new(plan, empty, Some(error), Some(dispatcher))
+            }
+        }
+    }
+
+    /// Returns a cloneable external cancellation control.
     pub fn control(&self) -> RunControl<M> {
-        unimplemented!()
+        RunControl {
+            state: Arc::clone(&self.cancel),
+            _mode: PhantomData,
+        }
     }
 }
 impl<M: Mode> Future for GraphRun<M> {
     type Output = Result<RunReport<M>, ExecuteError<M>>;
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unimplemented!()
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        assert!(!this.finished, "GraphRun polled after completion");
+        if let Some(error) = this.start_error.take() {
+            this.finished = true;
+            return Poll::Ready(Err(ExecuteError::Start(error)));
+        }
+        *this.cancel.driver.lock().unwrap() = Some(cx.waker().clone());
+        *this.job_queue.driver.lock().unwrap() = Some(cx.waker().clone());
+        if !this.initialized {
+            this.initialized = true;
+            if this.cancel.cancelled.load(Ordering::Acquire) {
+                this.cancel_unstarted();
+            } else {
+                for index in 0..this.plan.nodes.len() {
+                    if this.remaining[index] == 0 {
+                        this.statuses[index] = NodeStatus::Ready;
+                        this.ready.push_back(index);
+                    }
+                }
+            }
+        }
+
+        loop {
+            let mut progressed = false;
+            loop {
+                let event = { this.job_queue.events.lock().unwrap().pop_front() };
+                let Some(event) = event else {
+                    break;
+                };
+                progressed = true;
+                let index = match &event {
+                    JobEvent::Complete(index, _)
+                    | JobEvent::Panic(index)
+                    | JobEvent::Dropped(index)
+                    | JobEvent::Cancelled(index) => *index,
+                };
+                if this.statuses[index] != NodeStatus::Running {
+                    continue;
+                }
+                match event {
+                    JobEvent::Complete(_, result) => match result {
+                        Ok(outputs) => match this.validate_outputs(index, outputs) {
+                            Ok(values) => {
+                                if this.cancel.cancelled.load(Ordering::Acquire) {
+                                    this.statuses[index] = NodeStatus::Cancelled;
+                                } else {
+                                    this.commit_node(index, values);
+                                }
+                            }
+                            Err(error) => this.fail_node(index, error),
+                        },
+                        Err(mut error) => {
+                            if error.context.node.is_none() {
+                                error.context.node = Some(this.plan.nodes[index].id);
+                            }
+                            if error.kind == NodeErrorKind::Cancelled
+                                && this.cancel.cancelled.load(Ordering::Acquire)
+                            {
+                                this.statuses[index] = NodeStatus::Cancelled;
+                            } else {
+                                this.fail_node(index, error);
+                            }
+                        }
+                    },
+                    JobEvent::Panic(_) => {
+                        let error = this.node_error(index, NodeErrorKind::Panic);
+                        this.fail_node(index, error);
+                    }
+                    JobEvent::Dropped(_) => {
+                        if this.cancel.cancelled.load(Ordering::Acquire) {
+                            this.statuses[index] = NodeStatus::Cancelled;
+                        } else {
+                            let error = this.node_error(index, NodeErrorKind::Dispatch);
+                            this.fail_node(index, error);
+                        }
+                    }
+                    JobEvent::Cancelled(_) => this.statuses[index] = NodeStatus::Cancelled,
+                }
+            }
+            if this.cancel.aborted.load(Ordering::Acquire) {
+                for (index, future) in this.futures.iter_mut().enumerate() {
+                    if future.take().is_some() {
+                        progressed = true;
+                        this.statuses[index] = NodeStatus::Cancelled;
+                    }
+                }
+                this.cancel_unstarted();
+            } else if this.cancel.cancelled.load(Ordering::Acquire) {
+                this.cancel_unstarted();
+            }
+
+            while !this.cancel.cancelled.load(Ordering::Acquire) {
+                let Some(index) = this.ready.pop_front() else {
+                    break;
+                };
+                if this.statuses[index] != NodeStatus::Ready {
+                    continue;
+                }
+                progressed = true;
+                if let Some(dispatcher) = this.dispatcher.clone() {
+                    match this.build_inputs(index) {
+                        Ok(inputs) => {
+                            this.statuses[index] = NodeStatus::Running;
+                            let job = NodeJob::new(
+                                this.plan.nodes[index].id,
+                                index,
+                                this.plan.nodes[index].task.clone(),
+                                inputs,
+                                Arc::clone(&this.job_queue),
+                                Arc::clone(&this.cancel),
+                            );
+                            let dispatched =
+                                catch_unwind(AssertUnwindSafe(|| dispatcher.inner.dispatch(job)));
+                            if this.statuses[index] == NodeStatus::Running {
+                                match dispatched {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(source)) => {
+                                        let error = this.node_dispatch_error(index, source);
+                                        this.fail_node(index, error);
+                                    }
+                                    Err(_) => {
+                                        let error = this.node_error(index, NodeErrorKind::Dispatch);
+                                        this.fail_node(index, error);
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) => this.fail_node(index, error),
+                    }
+                } else {
+                    match this.build_inputs(index) {
+                        Ok(inputs) => {
+                            let task = this.plan.nodes[index].task.clone();
+                            let node = this.plan.nodes[index].id;
+                            let cancel = Arc::clone(&this.cancel);
+                            let claimed = {
+                                let _start = cancel.start_gate.lock().unwrap();
+                                if cancel.cancelled.load(Ordering::Acquire) {
+                                    false
+                                } else {
+                                    this.statuses[index] = NodeStatus::Running;
+                                    true
+                                }
+                            };
+                            if !claimed {
+                                this.statuses[index] = NodeStatus::Cancelled;
+                                continue;
+                            }
+                            let token = CancellationToken {
+                                state: Arc::clone(&this.cancel),
+                                _mode: PhantomData,
+                            };
+                            match catch_unwind(AssertUnwindSafe(|| {
+                                task.invoke(TaskContext::new(node, token), inputs)
+                            })) {
+                                Ok(future) => this.futures[index] = Some(future),
+                                Err(_) => {
+                                    let error = this.node_error(index, NodeErrorKind::Panic);
+                                    this.fail_node(index, error)
+                                }
+                            }
+                        }
+                        Err(error) => this.fail_node(index, error),
+                    }
+                }
+            }
+
+            for index in 0..this.futures.len() {
+                let Some(mut future) = this.futures[index].take() else {
+                    continue;
+                };
+                let polled = catch_unwind(AssertUnwindSafe(|| Pin::new(&mut future).poll(cx)));
+                match polled {
+                    Ok(Poll::Pending) => this.futures[index] = Some(future),
+                    Ok(Poll::Ready(result)) => {
+                        progressed = true;
+                        match result {
+                            Ok(outputs) => match this.validate_outputs(index, outputs) {
+                                Ok(values) => {
+                                    if this.cancel.cancelled.load(Ordering::Acquire) {
+                                        this.statuses[index] = NodeStatus::Cancelled;
+                                    } else {
+                                        this.commit_node(index, values);
+                                    }
+                                }
+                                Err(error) => this.fail_node(index, error),
+                            },
+                            Err(mut error) => {
+                                if error.context.node.is_none() {
+                                    error.context.node = Some(this.plan.nodes[index].id);
+                                }
+                                if error.kind == NodeErrorKind::Cancelled
+                                    && this.cancel.cancelled.load(Ordering::Acquire)
+                                {
+                                    this.statuses[index] = NodeStatus::Cancelled;
+                                } else {
+                                    this.fail_node(index, error);
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        progressed = true;
+                        let error = this.node_error(index, NodeErrorKind::Panic);
+                        this.fail_node(index, error);
+                    }
+                }
+            }
+
+            if this.is_terminal() {
+                this.finished = true;
+                let cancelled = this.cancel.cancelled.load(Ordering::Acquire);
+                let failed = this.failures.iter().any(Option::is_some);
+                let report = this.take_report();
+                return Poll::Ready(if cancelled {
+                    Err(ExecuteError::Cancelled(report))
+                } else if failed {
+                    Err(ExecuteError::Failed(report))
+                } else {
+                    Ok(report)
+                });
+            }
+            if !progressed {
+                return Poll::Pending;
+            }
+        }
     }
+}
+
+impl<M: Mode> Unpin for GraphRun<M> {}
+
+impl<M: Mode> Drop for GraphRun<M> {
+    fn drop(&mut self) {
+        let _start = self.cancel.start_gate.lock().unwrap();
+        self.job_queue.retired.store(true, Ordering::Release);
+        self.cancel.cancelled.store(true, Ordering::Release);
+        self.cancel.aborted.store(true, Ordering::Release);
+        self.cancel.wake_all();
+    }
+}
+
+impl<M: Mode> GraphRun<M> {
+    fn build_inputs(&self, index: usize) -> Result<NodeInputs<M>, NodeError<M>> {
+        let node = &self.plan.nodes[index];
+        let mut values = Vec::with_capacity(node.inputs.len());
+        for (input_index, input) in node.inputs.iter().enumerate() {
+            if input.external.is_some() {
+                values.push(self.external[index][input_index].clone());
+                continue;
+            }
+            let mut resolved = Vec::with_capacity(input.sources.len());
+            for source in &input.sources {
+                let value = self.outputs[source.node][source.output]
+                    .as_ref()
+                    .ok_or_else(|| {
+                        self.node_error(index, NodeErrorKind::InternalInvariantViolation)
+                    })?
+                    .clone();
+                resolved.push(value);
+            }
+            values.push(resolved);
+        }
+        Ok(NodeInputs::from_resolved(
+            node.schema.layout(),
+            node.schema.schema().inputs.clone(),
+            values,
+        ))
+    }
+
+    fn validate_outputs(
+        &self,
+        index: usize,
+        outputs: NodeOutputs<M>,
+    ) -> Result<Vec<StoredValue>, NodeError<M>> {
+        let node = &self.plan.nodes[index];
+        let specs = &node.schema.schema().outputs;
+        let mut resolved: Vec<Option<StoredValue>> =
+            std::iter::repeat_with(|| None).take(specs.len()).collect();
+        for entry in outputs.into_entries() {
+            let output_index = match entry.address {
+                OutputAddress::Name(name) => specs.iter().position(|spec| spec.name == name),
+                OutputAddress::Key {
+                    layout,
+                    index: output,
+                } if layout == node.schema.layout() && output < specs.len() => Some(output),
+                OutputAddress::Key { .. } => None,
+            }
+            .ok_or_else(|| self.node_error(index, NodeErrorKind::InvalidOutputs))?;
+            if resolved[output_index].is_some()
+                || !specs[output_index]
+                    .value_type
+                    .matches(entry.value.type_id())
+            {
+                return Err(self.node_error(index, NodeErrorKind::InvalidOutputs));
+            }
+            resolved[output_index] = Some(entry.value);
+        }
+        if resolved.iter().any(Option::is_none) {
+            return Err(self.node_error(index, NodeErrorKind::InvalidOutputs));
+        }
+        Ok(resolved.into_iter().map(Option::unwrap).collect())
+    }
+
+    fn commit_node(&mut self, index: usize, values: Vec<StoredValue>) {
+        self.outputs[index] = values.into_iter().map(Some).collect();
+        self.statuses[index] = NodeStatus::Succeeded;
+        let successors = self.plan.nodes[index].successors.clone();
+        for successor in successors {
+            if self.statuses[successor] != NodeStatus::Pending {
+                continue;
+            }
+            self.remaining[successor] = self.remaining[successor].saturating_sub(1);
+            if self.remaining[successor] == 0 {
+                self.statuses[successor] = NodeStatus::Ready;
+                self.ready.push_back(successor);
+            }
+        }
+    }
+
+    fn fail_node(&mut self, index: usize, error: NodeError<M>) {
+        self.statuses[index] = NodeStatus::Failed;
+        self.failures[index] = Some(error);
+        let failed = self.plan.nodes[index].id;
+        let successors = self.plan.nodes[index].successors.clone();
+        for successor in successors {
+            self.block_branch(successor, failed);
+        }
+    }
+
+    fn block_branch(&mut self, index: usize, predecessor: NodeId) {
+        if matches!(
+            self.statuses[index],
+            NodeStatus::Succeeded
+                | NodeStatus::Failed
+                | NodeStatus::Cancelled
+                | NodeStatus::Blocked
+        ) {
+            return;
+        }
+        self.futures[index] = None;
+        self.statuses[index] = NodeStatus::Blocked;
+        self.blocked_by[index] = Some(predecessor);
+        let blocked = self.plan.nodes[index].id;
+        let successors = self.plan.nodes[index].successors.clone();
+        for successor in successors {
+            self.block_branch(successor, blocked);
+        }
+    }
+
+    fn cancel_unstarted(&mut self) {
+        for status in &mut self.statuses {
+            if matches!(*status, NodeStatus::Pending | NodeStatus::Ready) {
+                *status = NodeStatus::Cancelled;
+            }
+        }
+        self.ready.clear();
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.statuses.iter().all(|status| {
+            matches!(
+                status,
+                NodeStatus::Succeeded
+                    | NodeStatus::Failed
+                    | NodeStatus::Cancelled
+                    | NodeStatus::Blocked
+            )
+        })
+    }
+
+    fn node_error(&self, index: usize, kind: NodeErrorKind) -> NodeError<M> {
+        NodeError::internal(
+            kind,
+            ErrorContext {
+                graph: Some(self.plan.graph),
+                node: Some(self.plan.nodes[index].id),
+                name: Some(self.plan.nodes[index].name.clone()),
+                ..ErrorContext::default()
+            },
+        )
+    }
+
+    fn node_dispatch_error(&self, index: usize, source: DispatchError) -> NodeError<M> {
+        NodeError::dispatch(
+            source,
+            ErrorContext {
+                graph: Some(self.plan.graph),
+                node: Some(self.plan.nodes[index].id),
+                name: Some(self.plan.nodes[index].name.clone()),
+                ..ErrorContext::default()
+            },
+        )
+    }
+
+    fn take_report(&mut self) -> RunReport<M> {
+        let nodes = self
+            .plan
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| ReportNode {
+                node: node.id,
+                status: self.statuses[index],
+                blocked_by: self.blocked_by[index],
+                outputs: node
+                    .schema
+                    .schema()
+                    .outputs
+                    .iter()
+                    .map(|output| (output.id, node.schema_generation))
+                    .collect(),
+            })
+            .collect();
+        let mut targets = Vec::new();
+        for (node_index, node) in self.plan.nodes.iter().enumerate() {
+            if !node.active {
+                continue;
+            }
+            for (output_index, output) in node.schema.schema().outputs.iter().enumerate() {
+                if let Some(value) = self.outputs[node_index][output_index].take() {
+                    targets.push(TargetOutput::available(
+                        node.id,
+                        output.id,
+                        node.schema_generation,
+                        value,
+                    ));
+                } else {
+                    targets.push(TargetOutput::unavailable(
+                        node.id,
+                        output.id,
+                        node.schema_generation,
+                    ));
+                }
+            }
+        }
+        let failures = self
+            .failures
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, error)| {
+                error.take().map(|error| NodeFailure {
+                    node: self.plan.nodes[index].id,
+                    error,
+                })
+            })
+            .collect();
+        RunReport::new(
+            self.plan.graph,
+            self.plan.version,
+            self.run_id,
+            nodes,
+            failures,
+            targets,
+        )
+    }
+}
+
+fn empty_external<M: Mode>(plan: &CompiledPlan<M>) -> Vec<Vec<Vec<StoredValue>>> {
+    plan.nodes
+        .iter()
+        .map(|node| node.inputs.iter().map(|_| Vec::new()).collect())
+        .collect()
+}
+
+fn validate_run_inputs<M: Mode>(
+    plan: &CompiledPlan<M>,
+    inputs: RunInputs<M>,
+) -> Result<Vec<Vec<Vec<StoredValue>>>, StartError> {
+    let mut resolved = empty_external(plan);
+    for supplied in inputs.entries {
+        let Some(&node_index) = plan.node_index.get(&supplied.node) else {
+            return Err(start_error(
+                StartErrorKind::UnexpectedRunInput,
+                Some(supplied.node),
+            ));
+        };
+        let node = &plan.nodes[node_index];
+        let Some((input_index, external)) = node
+            .schema
+            .schema()
+            .inputs
+            .iter()
+            .enumerate()
+            .find_map(|(input_index, spec)| {
+                let external = node.inputs[input_index].external?;
+                (spec.id == supplied.slot && external.binding == supplied.binding)
+                    .then_some((input_index, external))
+            })
+        else {
+            return Err(start_error(
+                StartErrorKind::UnexpectedRunInput,
+                Some(supplied.node),
+            ));
+        };
+        let shape_matches = matches!(
+            (supplied.shape, external.cardinality),
+            (SuppliedShape::One, Cardinality::One) | (SuppliedShape::Many, Cardinality::Many)
+        );
+        if !shape_matches
+            || (external.cardinality == Cardinality::One && supplied.values.len() != 1)
+        {
+            return Err(start_error(
+                StartErrorKind::RunInputCardinality,
+                Some(supplied.node),
+            ));
+        }
+        if supplied
+            .values
+            .iter()
+            .any(|value| !external.value_type.matches(value.type_id()))
+        {
+            return Err(start_error(
+                StartErrorKind::RunInputTypeMismatch,
+                Some(supplied.node),
+            ));
+        }
+        resolved[node_index][input_index] = supplied.values;
+    }
+    for (node_index, node) in plan.nodes.iter().enumerate() {
+        for (input_index, input) in node.inputs.iter().enumerate() {
+            let Some(external) = input.external else {
+                continue;
+            };
+            if external.presence == crate::schema::Presence::Required
+                && resolved[node_index][input_index].is_empty()
+            {
+                return Err(start_error(StartErrorKind::MissingRunInput, Some(node.id)));
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+fn start_error(kind: StartErrorKind, node: Option<NodeId>) -> StartError {
+    StartError::new(
+        kind,
+        ErrorContext {
+            node,
+            graph: node.map(NodeId::graph),
+            ..ErrorContext::default()
+        },
+    )
 }
 /// External cancellation and abort control for one run.
 pub struct RunControl<M: Mode> {
+    state: Arc<CancelState>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> Clone for RunControl<M> {
     fn clone(&self) -> Self {
-        Self { _mode: PhantomData }
+        Self {
+            state: Arc::clone(&self.state),
+            _mode: PhantomData,
+        }
     }
 }
 impl<M: Mode> RunControl<M> {
-    /// Requests cooperative cancellation; currently a stub.
+    /// Requests cooperative cancellation and prevents new task claims.
     pub fn cancel(&self) {
-        unimplemented!()
+        let _start = self.state.start_gate.lock().unwrap();
+        self.state.cancelled.store(true, Ordering::Release);
+        self.state.wake_all();
     }
-    /// Requests pending futures be dropped on the next poll; currently a stub.
+    /// Prevents new task claims and requests pending futures be dropped.
     pub fn abort(&self) {
-        unimplemented!()
+        let _start = self.state.start_gate.lock().unwrap();
+        self.state.cancelled.store(true, Ordering::Release);
+        self.state.aborted.store(true, Ordering::Release);
+        self.state.wake_all();
     }
 }
 
@@ -228,36 +1184,82 @@ impl<M: Mode> RunControl<M> {
 /// pending run is dropped; late jobs can therefore never write into storage
 /// already reused by a later run.
 pub struct GraphRunner<M: Mode> {
+    plan: Arc<CompiledPlan<M>>,
+    dispatcher: Option<Dispatcher<M>>,
     _mode: PhantomData<M>,
 }
 impl<M: Mode> GraphRunner<M> {
-    /// Borrows this runner until the returned run is dropped; currently a stub.
+    pub(crate) fn new(version: crate::compiled::ExecutionGraphVersion<M>) -> Self {
+        Self {
+            plan: version.plan,
+            dispatcher: None,
+            _mode: PhantomData,
+        }
+    }
+
+    pub(crate) fn new_on(
+        version: crate::compiled::ExecutionGraphVersion<M>,
+        dispatcher: Dispatcher<M>,
+    ) -> Self {
+        Self {
+            plan: version.plan,
+            dispatcher: Some(dispatcher),
+            _mode: PhantomData,
+        }
+    }
+
+    /// Borrows this runner until the returned run is dropped.
     pub fn start<'a>(&'a mut self, _inputs: RunInputs<M>) -> Result<RunnerRun<'a, M>, StartError> {
-        unimplemented!()
+        let run = match self.dispatcher.clone() {
+            Some(dispatcher) => {
+                GraphRun::start_dispatched(Arc::clone(&self.plan), _inputs, dispatcher)?
+            }
+            None => GraphRun::start_inline(Arc::clone(&self.plan), _inputs)?,
+        };
+        Ok(RunnerRun {
+            run,
+            _runner: PhantomData,
+            _mode: PhantomData,
+        })
     }
-    /// Starts a borrowed runner future; currently a stub.
+    /// Starts a borrowed runner future.
     pub fn execute<'a>(&'a mut self, _inputs: RunInputs<M>) -> RunnerRun<'a, M> {
-        unimplemented!()
+        let run = match self.dispatcher.clone() {
+            Some(dispatcher) => {
+                GraphRun::execute_dispatched(Arc::clone(&self.plan), _inputs, dispatcher)
+            }
+            None => GraphRun::execute_inline(Arc::clone(&self.plan), _inputs),
+        };
+        RunnerRun {
+            run,
+            _runner: PhantomData,
+            _mode: PhantomData,
+        }
     }
-    /// Releases retained capacity; currently a stub.
+    /// Releases reusable per-run capacity when the runner retains any.
+    ///
+    /// The current storage strategy allocates isolated state for every run, so
+    /// this operation has no retained buffers to release.
     pub fn trim(&mut self) {
-        unimplemented!()
+        // The current implementation keeps only immutable compiled storage.
     }
 }
 /// Future borrowing a [`GraphRunner`] exclusively.
 pub struct RunnerRun<'a, M: Mode> {
+    run: GraphRun<M>,
     _runner: PhantomData<&'a mut GraphRunner<M>>,
     _mode: PhantomData<M>,
 }
 impl<'a, M: Mode> RunnerRun<'a, M> {
-    /// Returns run control; currently a stub.
+    /// Returns run control.
     pub fn control(&self) -> RunControl<M> {
-        unimplemented!()
+        self.run.control()
     }
 }
 impl<'a, M: Mode> Future for RunnerRun<'a, M> {
     type Output = Result<RunReport<M>, ExecuteError<M>>;
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unimplemented!()
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().run).poll(cx)
     }
 }
+impl<'a, M: Mode> Unpin for RunnerRun<'a, M> {}

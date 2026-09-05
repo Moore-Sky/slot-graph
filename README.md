@@ -2,17 +2,17 @@
 
 Slot Graph is a lightweight, embeddable typed slot graph for dependency-driven synchronous and asynchronous task execution.
 
-Version 0.3.1 is currently an **API skeleton**, not a working execution engine.
-Public types, task signatures, integration tests and examples define the intended
-contract in [the design document](documents/design.md). Operations that require
-the implementation deliberately use `unimplemented!()`.
+Version 0.4.0 provides graph editing, immutable compilation snapshots, inline
+sync/async execution, cancellation, reusable runners, and optional external
+Ready-node dispatch. The observable contract is described in
+[the design document](documents/design.md).
 
 ## Examples
 
 The numbered Rust files in `examples/` each describe one usage scenario, starting
 with synchronous data flow and progressing to version editing, cancellation and
-automatic connections. They are compiled by `cargo test --all-targets`; running
-them reaches the unimplemented API until the execution engine is built.
+automatic connections. They are compiled by `cargo test --all-targets` and can
+also be run directly with `cargo run --example <name>`.
 
 | Example | Scenario |
 | --- | --- |
@@ -88,11 +88,9 @@ cargo test --doc --locked
 cargo +1.71.0 test --all-targets --locked
 ```
 
-Behavioral contract tests are marked `#[ignore = "implementation pending"]`.
-They contain real API calls and expected results and are still type-checked.
-After implementing a behavior, remove its ignore marker and run the test.
-Passing the skeleton checks does not mean the graph execution contracts pass.
-See [the test guide](tests/README.md) for staged contract activation.
+Behavioral contract tests exercise graph edits, compilation, execution,
+cancellation, version isolation, and dispatch. See [the test guide](tests/README.md)
+for the contract matrix.
 
 The core has no third-party dependencies. `futures-lite` is only a development dependency
 used to exercise a host runtime; the core does not own an executor.

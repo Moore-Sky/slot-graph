@@ -2,7 +2,6 @@
 //!
 //! Slot-graph owns only the handle values for a run. The renderer owns the
 //! real allocation, command submission, GPU fence, and eventual pool return.
-//! The current skeleton deliberately panics when run.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -59,5 +58,5 @@ fn pass_transient_handles() {
     graph.set_active(lighting, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

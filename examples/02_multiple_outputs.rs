@@ -1,8 +1,7 @@
 //! Scenario 02: one node commits many outputs but creates one node dependency.
 //!
 //! `gbuffer` must commit color, depth, and normal atomically. The three Slot
-//! edges must not make `lighting` ready three times. This skeleton example
-//! deliberately panics when run.
+//! edges must not make `lighting` ready three times.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -55,5 +54,5 @@ fn multiple_outputs() {
     graph.set_active(lighting, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

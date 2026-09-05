@@ -1,8 +1,7 @@
 //! Scenario 03: an async producer feeds a synchronous consumer.
 //!
 //! `futures_lite::future::block_on` only demonstrates how a host can drive an ordinary Future;
-//! it is not a runtime dependency of slot-graph. The current skeleton panics
-//! deliberately when run.
+//! it is not a runtime dependency of slot-graph.
 
 use slot_graph::{outputs, schema, Graph, Local, RunInputs};
 
@@ -17,7 +16,7 @@ fn async_then_sync() {
         .add_async(
             "load",
             schema! { () -> ("bytes": Vec<u8>) },
-            |_task, _inputs| async move { Ok(outputs! { "bytes" => vec![1, 2, 3] }) },
+            |_task, _inputs| async move { Ok(outputs! { "bytes" => vec![1_u8, 2, 3] }) },
         )
         .unwrap();
 
@@ -39,5 +38,5 @@ fn async_then_sync() {
     graph.set_active(decode, true).unwrap();
 
     let version = graph.compile().unwrap();
-    let _ = futures_lite::future::block_on(version.execute(RunInputs::new()));
+    futures_lite::future::block_on(version.execute(RunInputs::new())).unwrap();
 }

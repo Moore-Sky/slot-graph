@@ -2,7 +2,6 @@
 //!
 //! Named access remains available for convenience. The keyed success path
 //! avoids name/hash lookup, but does not promise allocation-free execution.
-//! Graph and binding operations deliberately panic in this API skeleton.
 
 use futures_lite::future::block_on;
 use slot_graph::{schema, Graph, Local, NodeOutputs, RunInputs};
