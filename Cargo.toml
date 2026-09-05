@@ -1,6 +1,6 @@
 [package]
 name = "slot-graph"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.71"
 description = "A lightweight typed slot graph for dependency-driven synchronous and asynchronous task execution"
@@ -12,4 +12,4 @@ categories = ["asynchronous", "concurrency", "data-structures"]
 [dependencies]
 
 [dev-dependencies]
-smol = "2.0.2"
+futures-lite = "2.6.1"
