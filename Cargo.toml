@@ -1,6 +1,6 @@
 [package]
 name = "slot-graph"
-version = "0.4.5"
+version = "0.5.0"
 edition = "2021"
 rust-version = "1.71"
 description = "A lightweight typed slot graph for dependency-driven synchronous and asynchronous task execution"
@@ -12,4 +12,42 @@ categories = ["asynchronous", "concurrency", "data-structures"]
 [dependencies]
 
 [dev-dependencies]
+async-runtime = "=0.3.4"
+# Criterion permits newer transitive releases whose MSRVs exceed this crate's
+# 1.71 contract, so constrain the benchmark-only dependencies explicitly.
+clap = "=4.3.24"
+criterion = { version = "=0.5.1", default-features = false, features = ["html_reports"] }
 futures-lite = "2.6.1"
+half = "=2.4.1"
+
+[[bench]]
+name = "graph_build"
+harness = false
+
+[[bench]]
+name = "compile"
+harness = false
+
+[[bench]]
+name = "runtime_sync"
+harness = false
+
+[[bench]]
+name = "runtime_async"
+harness = false
+
+[[bench]]
+name = "dispatch"
+harness = false
+
+[[bench]]
+name = "async_runtime_integration"
+harness = false
+
+[[bench]]
+name = "allocations"
+harness = false
+
+[profile.profiling]
+inherits = "release"
+debug = true

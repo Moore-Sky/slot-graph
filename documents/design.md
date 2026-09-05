@@ -1,8 +1,8 @@
 # Slot Graph Design
 
-**Version: 0.4.5**
+**Version: 0.5.0**
 
-This is the authoritative 0.4.5 design. It defines observable behavior rather
+This is the authoritative 0.5.0 design. It defines observable behavior rather
 than a mandated implementation.
 
 ## Purpose
@@ -476,9 +476,9 @@ User task failures enter the graph through `NodeError::user(source)`. The
 structured NodeError retains the application error as its source while report
 consumers can still inspect node identity and error kind.
 
-Public error kinds and node statuses are non-exhaustive. Version 0.4.x preserves
+Public error kinds and node statuses are non-exhaustive. Version 0.5.x preserves
 Active, ordering, atomic output, and cancellation behavior; incompatible changes
-belong in 0.5. Internal invariant failures belong to node diagnostics rather than
+belong in 0.6. Internal invariant failures belong to node diagnostics rather than
 bypassing the final run report.
 
 ### Required verification and definition of done
@@ -496,8 +496,9 @@ inactive invalid branches; old/new version overlap; Local `Rc` and `!Send`
 Futures; Send rejection of incompatible values, futures, and factories; manual
 polling; and at least one real test runtime.
 
-0.4 is complete only when every listed behavior has an automated test or
-runnable example and locked Rust 1.71 CI passes.
+0.5.0 is complete only when every listed behavior has an automated test or
+runnable example, locked Rust 1.71 CI passes, and the reproducible timing and
+allocation baseline in `documents/bench-plan.md` has been recorded.
 Users must be able to declare sync/async graphs naturally; use Optional, Many,
 fan-out, RunInputs, target outputs, Active selection, edit/version isolation,
 Local/Send boundaries, host-driven Futures, structured reports, atomic
@@ -512,9 +513,10 @@ all targets/features, stable tests/doctests/examples, Rust 1.71 tests, and
 rustdoc warnings as errors. Any core, development, example, or benchmark
 dependency change must be resolved and tested on Rust 1.71.
 
-The core dependency list remains empty. `futures-lite` is the minimal dev-only host
-runtime for examples and integration tests; it must not become a public runtime
-choice. Tokio, async-std, rayon, futures utility/executor crates,
+The core dependency list remains empty. `futures-lite` is the minimal dev-only
+host runtime for examples and integration tests; Criterion and `async-runtime`
+are benchmark-only dependencies. None may become a public runtime choice.
+Tokio, async-std, rayon, futures utility/executor crates,
 `async-trait`, workflow storage, and concurrency containers are not justified
 core dependencies. New dependencies require an implemented feature or a
 measured benchmark result.

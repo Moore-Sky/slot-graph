@@ -2,7 +2,7 @@
 
 Slot Graph is a lightweight, embeddable typed slot graph for dependency-driven synchronous and asynchronous task execution.
 
-Version 0.4.5 provides graph editing, immutable compilation snapshots, inline
+Version 0.5.0 provides graph editing, immutable compilation snapshots, inline
 sync/async execution, cancellation, reusable runners, and optional external
 Ready-node dispatch. The observable contract is described in
 [the design document](documents/design.md).
@@ -92,5 +92,14 @@ Behavioral contract tests exercise graph edits, compilation, execution,
 cancellation, version isolation, and dispatch. See [the test guide](tests/README.md)
 for the contract matrix.
 
-The core has no third-party dependencies. `futures-lite` is only a development dependency
-used to exercise a host runtime; the core does not own an executor.
+## Performance baseline
+
+The benchmark suite covers graph editing and compilation, Local and SendMode
+sync/async execution, reusable runners, external dispatch, async-runtime
+integration, and allocation counts. The reproducible procedure and acceptance
+gates are in [the benchmark plan](documents/bench-plan.md); recorded results are
+under [documents/performance](documents/performance/).
+
+The core has no third-party dependencies. `futures-lite` is used by examples
+and tests; Criterion and `async-runtime` are benchmark-only development
+dependencies. The core does not own an executor.
